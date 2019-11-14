@@ -15,8 +15,8 @@ publish data to Cloud Pub/Sub. Additionally, the __snmpAdapter__ adapter will pu
   * Send SNMP trap to platform/edge: {__TOPIC ROOT__}/trap
 
 
-TODO - Determine how we handle traps with messaging
-TODO - Should we have a topic structure that includes the operation? (snmp/get, snmp/trap)
+ * TODO - Determine how we handle traps with messaging
+ * TODO - Should we have a topic structure that includes the operation? (snmp/get, snmp/trap)
 
 
 
@@ -121,16 +121,16 @@ In order to compile the adapter for execution, the following steps need to be pe
 ### Payloads
 
 #### SNMP Operations
-SNMP GET
-SNMP GETNEXT
-SNMP GETBULK (SNMP v2 and v3)
-SNMP SET
-SNMP GET-RESPONSE
-SNMP WALK
-SNMP TRAP
-SNMP NOTIFICATION (SNMP v2 and v3)
-SNMP INFORM (SNMP v2 and v3)
-SNMP REPORT (SNMP v2 and v3)
+ * SNMP GET
+ * SNMP GETNEXT
+ * SNMP GETBULK (SNMP v2 and v3)
+ * SNMP SET
+ * SNMP GET-RESPONSE
+ * SNMP WALK
+ * SNMP TRAP
+ * SNMP NOTIFICATION (SNMP v2 and v3)
+ * SNMP INFORM (SNMP v2 and v3)
+ * SNMP REPORT (SNMP v2 and v3)
 
 
 #### SNMP Get
