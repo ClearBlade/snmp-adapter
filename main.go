@@ -37,6 +37,10 @@ const (
 	snmpNotificationOperation      = "notification" //Not implemented, sent by SNMP agents
 	snmpInformOperation            = "inform"       //Not implemented, sent by SNMP agents
 	snmpReportOperation            = "report"       //Not implemented, SNMP v3 only
+	snmpWalkOperation              = "walk"         //TODO
+	snmpWalkAllOperation           = "walkall"      //TODO
+	snmpBulkWalkOperation          = "bulkwalk"     //TODO
+	snmpBulkWalkAllOperation       = "bulkwalkall"  //TODO
 )
 
 var (
@@ -74,6 +78,17 @@ type cbPlatformBroker struct {
 	password     *string
 	topic        string
 	qos          int
+}
+
+type adapterRequest struct {
+	SnmpAddress               string   `json:"snmpAddress"`
+	SnmpPort                  uint16   `json:"snmpPort"`
+	SnmpOIDs                  []string `json:"snmpOIDs"`
+	SnmpVersion               int      `json:"snmpVersion"`
+	SnmpCommunity             string   `json:"snmpCommunity"`
+	SnmpOperation             string   `json:"snmpOperation"`
+	SnmpGetBulkNonRepeaters   uint8    `json:"snmpGetBulkNonRepeaters"`
+	SnmpGetBulkMaxRepetitions uint8    `json:"snmpGetBulkMaxRepetitions"`
 }
 
 func init() {
@@ -237,12 +252,13 @@ func onConnect(client mqtt.Client) {
 	log.Println("[INFO] OnConnect - Begin configuring platform subscription")
 
 	var err error
-	for cbSubscribeChannel, err = cbSubscribe(topicRoot + "/publish"); err != nil; {
+	//TODO - Fix topic when we decide what the structure will look like
+	for cbSubscribeChannel, err = cbSubscribe(topicRoot + "/request"); err != nil; {
 		//Wait 30 seconds and retry
 		log.Printf("[ERROR] OnConnect - Error subscribing to MQTT: %s\n", err.Error())
 		log.Println("[ERROR] OnConnect - Will retry in 30 seconds...")
 		time.Sleep(time.Duration(30 * time.Second))
-		cbSubscribeChannel, err = cbSubscribe(topicRoot + "/publish")
+		cbSubscribeChannel, err = cbSubscribe(topicRoot + "/request")
 	}
 
 	//Start subscribe worker
@@ -257,30 +273,17 @@ func cbSubscribeWorker() {
 		select {
 		case message, ok := <-cbSubscribeChannel:
 			if ok {
-				var jsonPayload map[string]interface{}
-
+				jsonPayload := adapterRequest{}
 				if err := json.Unmarshal(message.Payload, &jsonPayload); err != nil {
 					log.Printf("[ERROR] cbSubscribeWorker - Error encountered unmarshalling json: %s\n", err.Error())
 					sendErrorResponse(message.Payload, err.Error())
 				} else {
 					log.Printf("[DEBUG] cbSubscribeWorker - Json payload received: %#v\n", jsonPayload)
 					if connection, err := getConnection(jsonPayload); err != nil {
-						sendErrorResponse(message.Payload, err.Error())
+						sendErrorResponse(message.Payload, "Error creating SNMP Connection: "+err.Error())
 					} else {
-						if result, err := executeSnmpOperation(connection, jsonPayload); err != nil {
+						if err := executeSnmpOperation(connection, jsonPayload); err != nil {
 							sendErrorResponse(message.Payload, err.Error())
-						} else {
-							//Format the response and return it
-							responseData := createJSONFromPDUs(result.Variables)
-
-							fmt.Printf("[DEBUG] cbSubscribeWorker - Publishing response data: %+v\n", responseData)
-							responseJSON, err := json.Marshal(responseData)
-
-							if err != nil {
-								cbPublish(topicRoot+"/trap", string(responseJSON))
-							} else {
-								log.Printf("[ERROR] cbSubscribeWorker - Error marshalling JSON response data: %s\n", err.Error())
-							}
 						}
 					}
 				}
@@ -375,7 +378,7 @@ func applyAdapterSettings(adapterSettings map[string]interface{}) {
 
 			if adapterSettings["trapServerPort"] != nil {
 				log.Println("[INFO] applyAdapterConfig - Starting trap server on port " + strconv.Itoa(int(adapterSettings["trapServerPort"].(float64))))
-				createTrapServer(strconv.Itoa(int(adapterSettings["trapServerPort"].(float64))))
+				go createTrapServer(strconv.Itoa(int(adapterSettings["trapServerPort"].(float64))))
 			} else {
 				log.Printf("[INFO] applyAdapterSettings - A trapServerPort value was not found.\n")
 			}
@@ -385,46 +388,66 @@ func applyAdapterSettings(adapterSettings map[string]interface{}) {
 	}
 }
 
-func getConnection(payload map[string]interface{}) (*snmp.GoSNMP, error) {
+func getConnection(payload adapterRequest) (*snmp.GoSNMP, error) {
 	//TODO - Need to figure out if/when we use the default connection parameter
+	log.Println("[DEBUG] getConnection - Verifying connection parameters")
 
-	if payload["snmpAddress"] == nil {
+	if payload.SnmpAddress == "" {
 		log.Printf("[ERROR] getConnection - snmpAddress not specified in incoming payload: %+v\n", payload)
 		return nil, errors.New("snmpAddress not specified in incoming payload")
 	}
 
-	if payload["snmpPort"] == nil {
+	if payload.SnmpPort == 0 {
 		log.Printf("[ERROR] getConnection - snmpPort not specified in incoming payload: %+v\n", payload)
 		return nil, errors.New("snmpPort not specified in incoming payload")
 	}
 
-	if payload["snmpCommunity"] == nil {
+	if payload.SnmpCommunity == "" {
 		log.Printf("[ERROR] getConnection - snmpCommunity not specified in incoming payload: %+v\n", payload)
 		return nil, errors.New("snmpCommunity not specified in incoming payload")
 	}
 
-	if payload["snmpVersion"] == nil {
+	if payload.SnmpVersion == 0 {
 		log.Printf("[ERROR] getConnection - snmpVersion not specified in incoming payload: %+v\n", payload)
 		return nil, errors.New("snmpVersion not specified in incoming payload")
 	}
 
 	params := &snmp.GoSNMP{
-		Target:    payload["snmpAddress"].(string),
-		Port:      payload["snmpPort"].(uint16),
-		Community: payload["snmpCommunity"].(string),
-		Version:   payload["snmpVersion"].(snmp.SnmpVersion),
+		Target:    payload.SnmpAddress,
+		Port:      payload.SnmpPort,
+		Community: payload.SnmpCommunity,
 		Timeout:   time.Duration(2) * time.Second,
+		MaxOids:   1,
 	}
+
+	switch payload.SnmpVersion {
+	case 1:
+		params.Version = snmp.Version1
+	case 2:
+		params.Version = snmp.Version2c
+	case 3:
+		params.Version = snmp.Version3
+	default:
+		log.Printf("[ERROR] getConnection - Invalid version specified: %+v\n", payload.SnmpVersion)
+		return nil, fmt.Errorf("Invalid version specified: %+v", payload.SnmpVersion)
+	}
+	log.Printf("[DEBUG] getConnection - Version set to %+v\n", params.Version)
 
 	if logLevel == "debug" {
 		params.Logger = log.New(os.Stdout, "", 0)
 	}
 
-	return params, nil
+	return params, params.Connect()
 }
 
-func sendResponse() {
+func sendResponse(returnData map[string]interface{}) {
+	response, err := json.Marshal(returnData)
 
+	if err == nil {
+		cbPublish(topicRoot+"/response", string(response))
+	} else {
+		log.Printf("[ERROR] sendResponse - Error marshalling JSON: %s\n", err.Error())
+	}
 }
 
 func sendErrorResponse(request []byte, error string) {
@@ -433,10 +456,10 @@ func sendErrorResponse(request []byte, error string) {
 		"error":   error,
 	})
 
-	if err != nil {
+	if err == nil {
 		cbPublish(topicRoot+"/error", string(response))
 	} else {
-		log.Printf("[ERROR] respondWithError - Error marshalling JSON: %s\n", err.Error())
+		log.Printf("[ERROR] sendErrorResponse - Error marshalling JSON: %s\n", err.Error())
 	}
 }
 
@@ -471,7 +494,7 @@ func snmpTrapHandler(packet *snmp.SnmpPacket, addr *net.UDPAddr) {
 	}
 }
 
-func executeSnmpOperation(connection *snmp.GoSNMP, payload map[string]interface{}) (result *snmp.SnmpPacket, err error) {
+func executeSnmpOperation(connection *snmp.GoSNMP, payload adapterRequest) error {
 	//Typically, SNMP uses UDP as its transport protocol.
 	//The well known UDP ports for SNMP traffic are 161 (SNMP) and 162 (SNMPTRAP)
 	// var Default = &GoSNMP{
@@ -484,93 +507,94 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload map[string]interface{
 	// 	ExponentialTimeout: true,
 	// 	MaxOids:            MaxOids,
 	// }
-	operation := payload["operation"].(string)
+	log.Println("[DEBUG] executeSnmpOperation - Executing snmp operation")
+
+	var result interface{}
+	var err error
+
+	//TODO - Determine if operation should be in topic structure
+	operation := payload.SnmpOperation
 
 	switch operation {
 	case snmpGetOperation:
-		return connection.Get(payload["snmpOIDs"].([]string))
+		result, err = connection.Get(payload.SnmpOIDs) //returns (result *SnmpPacket, err error)
 	case snmpGetNextOperation:
-		return connection.GetNext(payload["snmpOIDs"].([]string))
-	// case snmpGetBulk:
-	// 	return nil, connection.GetBulk(payload["snmpOIDs"].([]string))
-	// case snmpSetOperation:
-	// 	pdu := snmp.SnmpPDU{
-	// 		Name:  trapTestOid,
-	// 		Type:  OctetString,
-	// 		Value: trapTestPayload,
-	// 	}
-	// 	return nil, connection.Set //(payload["snmpOIDs"].([]string))
-	// case snmpTrapOperation:
-	// 	return nil, connection.Get //(payload["snmpOIDs"].([]string))
-	// case snmpNotificationOperation:
-	// 	return nil, connection.Get //(payload["snmpOIDs"].([]string))
-	// case snmpInformOperation:
-	// 	return nil, connection.Get //(payload["snmpOIDs"].([]string))
-	// case snmpReportOperation:
-	// 	return nil, connection.Get //(payload["snmpOIDs"].([]string))
+		result, err = connection.GetNext(payload.SnmpOIDs) // returns (result *SnmpPacket, err error)
+	case snmpGetBulk:
+		// if payload.SnmpGetBulkNonRepeaters == 0 {
+		// 	//TODO see about defaulting
+		// 	err = errors.New("snmpGetBulkNonRepeaters not provided in payload. Cannot execute getbulk operation")
+		// }
+
+		// //TODO see about defaulting
+		// if payload.SnmpGetBulkMaxRepetitions == 0 {
+		// 	err = errors.New("snmpGetBulkMaxRepetitions not provided in payload. Cannot execute getbulk operation")
+		// }
+
+		result, err = connection.GetBulk(payload.SnmpOIDs, payload.SnmpGetBulkNonRepeaters, payload.SnmpGetBulkMaxRepetitions) // returns (result *SnmpPacket, err error)
+	case snmpSetOperation:
+		//Will need to account for data type specified in Mib.
+
+		// pdu := snmp.SnmpPDU{
+		// 	Name:  payload["snmpOIDs"].([]string)[0],
+		// 	Type:  OctetString,
+		// 	Value: trapTestPayload,
+		// }
+		// result, err = connection.Set //(payload["snmpOIDs"].([]string)) // returns (result *SnmpPacket, err error)
+
+		err = errors.New("SNMP set currently not supported") // returns error
+	case snmpWalkOperation:
+		err = errors.New("SNMP walk currently not supported") // returns error
+	case snmpWalkAllOperation:
+		err = errors.New("SNMP walk all currently not supported") // returns (results []SnmpPDU, err error)
+	case snmpBulkWalkOperation:
+		err = errors.New("SNMP bulk walk currently not supported") // returns error
+	case snmpBulkWalkAllOperation:
+		err = errors.New("SNMP bulk walk all0c[] currently not supported") // returns (results []SnmpPDU, err error)
 	default:
-		return nil, errors.New("Invalid snmp operation: " + operation)
+		err = errors.New("Invalid snmp operation: " + operation)
 	}
+
+	if err != nil {
+		log.Printf("[ERROR] executeSnmpOperation - Error executing snmp operation: %s\n", err.Error())
+		return err
+	}
+
+	//Create JSON response
+	//Need to see if the results interface is []SnmpPDU or *SnmpPacket.
+	//If *SnmpPacket, get Variables value from *SnmpPacket. Variables value is []SnmpPDU
+	var pdus []snmp.SnmpPDU
+	switch v := result.(type) {
+	case *snmp.SnmpPacket:
+		//get, getnext, getbulk, set
+		pdus = (result.(*snmp.SnmpPacket)).Variables
+	case []snmp.SnmpPDU:
+		//walkall, bulkwalkall
+		pdus = result.([]snmp.SnmpPDU)
+	default:
+		// And here I'm feeling dumb. ;)
+		fmt.Printf("Unsupported type: %v", v)
+	}
+
+	sendResponse(createJSONFromPDUs(pdus))
+	return nil
 }
 
 func createJSONFromPDUs(variables []snmp.SnmpPDU) map[string]interface{} {
-	var trapData map[string]interface{}
+	pduJSON := make(map[string]interface{})
 
 	for _, variable := range variables {
 		switch variable.Type {
 		case snmp.OctetString:
-			trapData[variable.Name] = variable.Value.([]byte)
+			//TODO - Need to figure out how to transform to string
+			// OID: .1.3.6.1.6.3.10.2.1.1.0
+			// decodeValue: type is OctetString
+			// decodeValue: value is []byte{0x80, 0x0, 0x1f, 0x88, 0x80, 0x38, 0xf7, 0xc1, 0x4b, 0x33, 0x7b, 0xcc, 0x5d, 0x0, 0x0, 0x0, 0x0}
+			pduJSON[variable.Name] = variable.Value.([]byte)
 		default:
-			trapData[variable.Name] = variable.Value
+			pduJSON[variable.Name] = variable.Value
 		}
 	}
 
-	return trapData
+	return pduJSON
 }
-
-// func snmpGet(connection *snmp.GoSNMP) (result *snmp.SnmpPacket, err error) {
-
-// 	//TODO
-
-// 	return
-// }
-
-// func snmpGetNext(connection *snmp.GoSNMP) {
-// 	//TODO
-
-// 	return
-// }
-
-// func snmpGetBulk(connection *snmp.GoSNMP) {
-// 	//TODO
-
-// 	return
-// }
-
-// func snmpSet(connection *snmp.GoSNMP) {
-
-// 	return
-// }
-
-// func snmpGetResponse(connection *snmp.GoSNMP) {
-// 	return
-// }
-
-// func snmpWalk(connection *snmp.GoSNMP) {
-// 	return
-// }
-
-// func snmpNotification(connection *snmp.GoSNMP) {
-// 	//SNMP v2 and v3
-// 	return
-// }
-
-// func snmpInform(connection *snmp.GoSNMP) {
-// 	//SNMP v2 and v3
-// 	return
-// }
-
-// func snmpReport(connection *snmp.GoSNMP) {
-// 	//SNMP v2 and v3
-// 	return
-// }
