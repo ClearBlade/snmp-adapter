@@ -27,7 +27,11 @@ const (
 	messURL                        = "localhost:1883"
 	msgSubscribeQos                = 0
 	msgPublishQos                  = 0
+	defaultTopicRoot               = "snmp"
 	adapterConfigCollectionDefault = "adapter_config"
+	defaultSnmpTargetPort          = 161
+	defaultTrapServerPort          = 162
+	defaultSnmpTimeout             = time.Duration(2) * time.Second
 	snmpGetOperation               = "get"
 	snmpGetNextOperation           = "getnext"
 	snmpGetBulk                    = "getbulk"
@@ -58,13 +62,89 @@ var (
 	trapServer *snmp.TrapListener
 
 	//Miscellaneous adapter variables
-	topicRoot = "cb/snmp"
-
 	cbBroker           cbPlatformBroker
 	cbSubscribeChannel <-chan *mqttTypes.Publish
 	endWorkersChannel  chan string
 	interruptChannel   chan os.Signal
+	config             adapterConfig
 )
+
+type adapterConfig struct {
+	adapterSettings
+	TopicRoot string `json:"topic_root"`
+}
+
+type adapterSettings struct {
+	ShouldHandleTraps bool   `json:"shouldHandleTraps"`
+	Port              uint16 `json:"trapServerPort"`
+	snmpConnectionSettings
+}
+
+type snmpConnectionSettings struct {
+	//Transport protocol to use ("udp" or "tcp"); if unset "udp" will be used.
+	SnmpTransport string `json:"snmpTransport"`
+
+	//SNMP Version - 1, 2 or 3
+	SnmpVersion uint8 `json:"snmpVersion"`
+
+	//SNMP Community string
+	SnmpCommunity string `json:"snmpCommunity"`
+
+	//timeout for the SNMP Query
+	SnmpTimeout uint `json:"snmpTimeout"`
+
+	//number of retries to attempt within timeout
+	SnmpRetries int `json:"snmpRetries"`
+
+	//Double timeout in each retry
+	SnmpExponentialTimeout bool `json:"snmpExponentialTimeout"`
+
+	//maximum number of oids allowed in a Get
+	SnmpMaxOids int `json:"snmpMaxOids"`
+
+	// MaxRepetitions sets the GETBULK max-repetitions used by BulkWalk*
+	// Unless MaxRepetitions is specified it will use defaultMaxRepetitions (50)
+	// This may cause issues with some devices, if so set MaxRepetitions lower.
+	// See comments in https://github.com/soniah/gosnmp/issues/100
+	SnmpMaxRepetitions uint8 `json:"snmpMaxRepetitions"`
+
+	// NonRepeaters sets the GETBULK max-repeaters used by BulkWalk*
+	// (default: 0 as per RFC 1905)
+	SnmpNonRepeaters int `json:"snmpNonRepeaters"`
+
+	// netsnmp has '-C APPOPTS - set various application specific behaviours'
+	//
+	// - 'c: do not check returned OIDs are increasing' - use AppOpts = map[string]interface{"c":true} with
+	//   Walk() or BulkWalk(). The library user needs to implement their own policy for terminating walks.
+	// - 'p,i,I,t,E' -> pull requests welcome
+	SnmpAppOpts map[string]interface{} `json:"snmpAppOpts"`
+
+	// MsgFlags is an SNMPV3 MsgFlags - describe Authentication, Privacy, and whether a report PDU must be sent
+	SnmpMsgFlags uint8 `json:"snmpMsgFlags"`
+
+	// SecurityModel is an SNMPV3 Security Model, UserSecurityModel (=3) is the only one implemented
+	SnmpSecurityModel uint8 `json:"snmpSecurityModel"`
+
+	// SecurityParameters is an SNMPV3 Security Model parameters struct
+	SnmpSecurityParameters map[string]interface{} `json:"snmpSecurityParameters"`
+
+	// ContextEngineID is SNMPV3 ContextEngineID in ScopedPDU
+	SnmpContextEngineID string `json:"snmpContextEngineID"`
+
+	// ContextName is SNMPV3 ContextName in ScopedPDU
+	SnmpContextName string `json:"snmpContextName"`
+}
+
+type adapterRequest struct {
+	Target   string   `json:"snmpAddress"`
+	Port     uint16   `json:"snmpPort"`
+	SnmpOIDs []string `json:"snmpOIDs"`
+
+	//The SNMP operation to invoke. One of get, getnext, getbulk, set, walk, walkall, bulkwalk, bulkwalkall
+	SnmpOperation string `json:"snmpOperation"`
+
+	snmpConnectionSettings
+}
 
 type cbPlatformBroker struct {
 	name         string
@@ -78,17 +158,6 @@ type cbPlatformBroker struct {
 	password     *string
 	topic        string
 	qos          int
-}
-
-type adapterRequest struct {
-	SnmpAddress               string   `json:"snmpAddress"`
-	SnmpPort                  uint16   `json:"snmpPort"`
-	SnmpOIDs                  []string `json:"snmpOIDs"`
-	SnmpVersion               int      `json:"snmpVersion"`
-	SnmpCommunity             string   `json:"snmpCommunity"`
-	SnmpOperation             string   `json:"snmpOperation"`
-	SnmpGetBulkNonRepeaters   uint8    `json:"snmpGetBulkNonRepeaters"`
-	SnmpGetBulkMaxRepetitions uint8    `json:"snmpGetBulkMaxRepetitions"`
 }
 
 func init() {
@@ -252,13 +321,12 @@ func onConnect(client mqtt.Client) {
 	log.Println("[INFO] OnConnect - Begin configuring platform subscription")
 
 	var err error
-	//TODO - Fix topic when we decide what the structure will look like
-	for cbSubscribeChannel, err = cbSubscribe(topicRoot + "/request"); err != nil; {
+	for cbSubscribeChannel, err = cbSubscribe(config.TopicRoot + "/request"); err != nil; {
 		//Wait 30 seconds and retry
 		log.Printf("[ERROR] OnConnect - Error subscribing to MQTT: %s\n", err.Error())
 		log.Println("[ERROR] OnConnect - Will retry in 30 seconds...")
 		time.Sleep(time.Duration(30 * time.Second))
-		cbSubscribeChannel, err = cbSubscribe(topicRoot + "/request")
+		cbSubscribeChannel, err = cbSubscribe(config.TopicRoot + "/request")
 	}
 
 	//Start subscribe worker
@@ -324,7 +392,9 @@ func cbPublish(topic string, data string) error {
 
 func getAdapterConfig() {
 	log.Println("[INFO] getAdapterConfig - Retrieving adapter config")
-	var settingsJSON map[string]interface{}
+	config = adapterConfig{
+		TopicRoot: defaultTopicRoot,
+	}
 
 	//Retrieve the adapter configuration row
 	query := cb.NewQuery()
@@ -337,23 +407,22 @@ func getAdapterConfig() {
 		log.Println("[DEBUG] getAdapterConfig - Adapter configuration could not be retrieved. Using defaults")
 		log.Printf("[ERROR] getAdapterConfig - Error retrieving adapter configuration: %s\n", err.Error())
 	} else {
-		if len(results["DATA"].([]interface{})) > 0 {
-			log.Printf("[DEBUG] getAdapterConfig - Adapter config retrieved: %#v\n", results)
+		data := results["DATA"].([]interface{})
+		if len(data) > 0 {
 			log.Println("[INFO] getAdapterConfig - Adapter config retrieved")
+			configData := data[0].(map[string]interface{})
 
 			//MQTT topic root
-			if results["DATA"].([]interface{})[0].(map[string]interface{})["topic_root"] != nil {
-				log.Printf("[DEBUG] getAdapterConfig - Setting topicRoot to %s\n", results["DATA"].([]interface{})[0].(map[string]interface{})["topic_root"].(string))
-				topicRoot = results["DATA"].([]interface{})[0].(map[string]interface{})["topic_root"].(string)
-			} else {
-				log.Printf("[INFO] getAdapterConfig - Topic root is nil. Using default value %s\n", topicRoot)
+			if configData["topic_root"] != nil {
+				config.TopicRoot = configData["topic_root"].(string)
 			}
+			log.Printf("[DEBUG] getAdapterConfig - TopicRoot set to %s\n", config.TopicRoot)
 
 			//adapter_settings
-			log.Println("[DEBUG] getAdapterConfig - Retrieving adapter settings...")
-			if results["DATA"].([]interface{})[0].(map[string]interface{})["adapter_settings"] != nil {
-				if err := json.Unmarshal([]byte(results["DATA"].([]interface{})[0].(map[string]interface{})["adapter_settings"].(string)), &settingsJSON); err != nil {
-					log.Printf("[ERROR] getAdapterConfig - Error while unmarshalling json: %s. Defaulting all adapter settings.\n", err.Error())
+			if configData["adapter_settings"] != nil {
+				if err := json.Unmarshal([]byte(configData["adapter_settings"].(string)), &config); err != nil {
+					log.Printf("[ERROR] getAdapterConfig - Error while unmarshalling adapter settings: %s. Defaulting all adapter settings.\n", err.Error())
+					config.Port = 162
 				}
 			} else {
 				log.Println("[INFO] applyAdapterConfig - Settings are nil. Defaulting all adapter settings.")
@@ -363,45 +432,25 @@ func getAdapterConfig() {
 		}
 	}
 
-	if settingsJSON == nil {
-		settingsJSON = make(map[string]interface{})
-	}
-
-	applyAdapterSettings(settingsJSON)
+	applyAdapterSettings(&config)
 }
 
-func applyAdapterSettings(adapterSettings map[string]interface{}) {
-	//shouldHandleTraps
-	if adapterSettings["shouldHandleTraps"] != nil {
-		if adapterSettings["shouldHandleTraps"].(bool) == true {
-			log.Println("[INFO] applyAdapterConfig - shouldHandleTraps is true, starting SNMP trap server")
-
-			if adapterSettings["trapServerPort"] != nil {
-				log.Println("[INFO] applyAdapterConfig - Starting trap server on port " + strconv.Itoa(int(adapterSettings["trapServerPort"].(float64))))
-				go createTrapServer(strconv.Itoa(int(adapterSettings["trapServerPort"].(float64))))
-			} else {
-				log.Printf("[INFO] applyAdapterSettings - A trapServerPort value was not found.\n")
-			}
-		}
-	} else {
-		log.Printf("[INFO] applyAdapterSettings - A shouldHandleTraps value was not found.\n")
+func applyAdapterSettings(config *adapterConfig) {
+	if config.ShouldHandleTraps == true {
+		log.Printf("[INFO] applyAdapterConfig - Starting trap server on port %d\n", config.Port)
+		go createTrapServer(config)
 	}
 }
 
 func getConnection(payload adapterRequest) (*snmp.GoSNMP, error) {
-	//TODO - Need to figure out if/when we use the default connection parameter
 	log.Println("[DEBUG] getConnection - Verifying connection parameters")
 
-	if payload.SnmpAddress == "" {
+	if payload.Target == "" {
 		log.Printf("[ERROR] getConnection - snmpAddress not specified in incoming payload: %+v\n", payload)
 		return nil, errors.New("snmpAddress not specified in incoming payload")
 	}
 
-	if payload.SnmpPort == 0 {
-		log.Printf("[ERROR] getConnection - snmpPort not specified in incoming payload: %+v\n", payload)
-		return nil, errors.New("snmpPort not specified in incoming payload")
-	}
-
+	//TODO - May need to make this required for only SNMP V1
 	if payload.SnmpCommunity == "" {
 		log.Printf("[ERROR] getConnection - snmpCommunity not specified in incoming payload: %+v\n", payload)
 		return nil, errors.New("snmpCommunity not specified in incoming payload")
@@ -413,25 +462,42 @@ func getConnection(payload adapterRequest) (*snmp.GoSNMP, error) {
 	}
 
 	params := &snmp.GoSNMP{
-		Target:    payload.SnmpAddress,
-		Port:      payload.SnmpPort,
-		Community: payload.SnmpCommunity,
-		Timeout:   time.Duration(2) * time.Second,
-		MaxOids:   1,
+		Target:             payload.Target,
+		Port:               payload.Port,
+		Community:          payload.SnmpCommunity,
+		Timeout:            time.Duration(payload.SnmpTimeout) * time.Second,
+		Version:            convertSnmpVersion(payload.SnmpVersion),
+		Retries:            payload.snmpConnectionSettings.SnmpRetries,
+		ExponentialTimeout: payload.snmpConnectionSettings.SnmpExponentialTimeout,
+		MaxOids:            payload.snmpConnectionSettings.SnmpMaxOids,
+		MaxRepetitions:     payload.snmpConnectionSettings.SnmpMaxRepetitions,
+		NonRepeaters:       payload.snmpConnectionSettings.SnmpNonRepeaters,
+		AppOpts:            payload.snmpConnectionSettings.SnmpAppOpts,
+		ContextEngineID:    payload.snmpConnectionSettings.SnmpContextEngineID,
+		ContextName:        payload.snmpConnectionSettings.SnmpContextName,
 	}
 
-	switch payload.SnmpVersion {
-	case 1:
-		params.Version = snmp.Version1
-	case 2:
-		params.Version = snmp.Version2c
-	case 3:
-		params.Version = snmp.Version3
-	default:
-		log.Printf("[ERROR] getConnection - Invalid version specified: %+v\n", payload.SnmpVersion)
-		return nil, fmt.Errorf("Invalid version specified: %+v", payload.SnmpVersion)
+	log.Printf("[DEBUG] getConnection - SNMP version set to %+v\n", params.Version)
+
+	if payload.Port == 0 {
+		params.Port = defaultSnmpTargetPort
 	}
-	log.Printf("[DEBUG] getConnection - Version set to %+v\n", params.Version)
+
+	if payload.snmpConnectionSettings.SnmpTransport != "" && (payload.snmpConnectionSettings.SnmpTransport == "tcp" ||
+		payload.snmpConnectionSettings.SnmpTransport == "udp") {
+		params.Transport = payload.snmpConnectionSettings.SnmpTransport
+	} else {
+		//Defaulting occurs in validateParameters method of GoSNMP
+		log.Println("[DEBUG] getConnection - Transport defaulted to udp")
+	}
+
+	if payload.snmpConnectionSettings.SnmpTimeout == 0 {
+		params.Timeout = defaultSnmpTimeout
+	}
+
+	// MsgFlags:           payload.snmpConnectionSettings.SnmpMsgFlags,
+	// SecurityModel:      payload.snmpConnectionSettings.SnmpSecurityModel,
+	// SecurityParameters: payload.snmpConnectionSettings.SnmpSecurityParameters,
 
 	if logLevel == "debug" {
 		params.Logger = log.New(os.Stdout, "", 0)
@@ -444,7 +510,7 @@ func sendResponse(returnData map[string]interface{}) {
 	response, err := json.Marshal(returnData)
 
 	if err == nil {
-		cbPublish(topicRoot+"/response", string(response))
+		cbPublish(config.TopicRoot+"/response", string(response))
 	} else {
 		log.Printf("[ERROR] sendResponse - Error marshalling JSON: %s\n", err.Error())
 	}
@@ -457,21 +523,37 @@ func sendErrorResponse(request []byte, error string) {
 	})
 
 	if err == nil {
-		cbPublish(topicRoot+"/error", string(response))
+		cbPublish(config.TopicRoot+"/error", string(response))
 	} else {
 		log.Printf("[ERROR] sendErrorResponse - Error marshalling JSON: %s\n", err.Error())
 	}
 }
 
-func createTrapServer(port string) {
+func createTrapServer(config *adapterConfig) {
 	trapServer = snmp.NewTrapListener()
 	trapServer.OnNewTrap = snmpTrapHandler
 
-	//TODO - Need to determine if default params should be used or if we need to use our own values
-	trapServer.Params = snmp.Default
-	trapServer.Params.Logger = log.New(os.Stdout, "", 0)
+	//TODO - Determine which of these we can get rid of
+	trapServer.Params = &snmp.GoSNMP{
+		Port:               config.Port,
+		Community:          config.SnmpCommunity,
+		Timeout:            time.Duration(config.SnmpTimeout) * time.Second,
+		Version:            convertSnmpVersion(config.SnmpVersion),
+		Retries:            config.SnmpRetries,
+		ExponentialTimeout: config.SnmpExponentialTimeout,
+		MaxOids:            config.SnmpMaxOids,
+		MaxRepetitions:     config.SnmpMaxRepetitions,
+		NonRepeaters:       config.SnmpNonRepeaters,
+		AppOpts:            config.SnmpAppOpts,
+		ContextEngineID:    config.SnmpContextEngineID,
+		ContextName:        config.SnmpContextName,
+	}
 
-	err := trapServer.Listen("0.0.0.0:" + port)
+	if logLevel == "debug" {
+		trapServer.Params.Logger = log.New(os.Stdout, "", 0)
+	}
+
+	err := trapServer.Listen("0.0.0.0:" + strconv.Itoa(int(config.Port)))
 	if err != nil {
 		log.Printf("[ERROR] createTrapServer - Error encountered invoking trapServer.listen: %s\n", err)
 		log.Panicf("Error encountered invoking trapServer.listen: %s\n", err)
@@ -485,12 +567,10 @@ func snmpTrapHandler(packet *snmp.SnmpPacket, addr *net.UDPAddr) {
 	//Publish trap data
 	trapData := createJSONFromPDUs(packet.Variables)
 	fmt.Printf("[DEBUG] formatTrap - Publishing trap data: %+v\n", trapData)
-	trapJSON, err := json.Marshal(trapData)
-
-	if err != nil {
-		cbPublish(topicRoot+"/trap", string(trapJSON))
-	} else {
+	if trapJSON, err := json.Marshal(trapData); err != nil {
 		log.Printf("[ERROR] formatTrap - Error marshalling JSON trap data: %s\n", err.Error())
+	} else {
+		cbPublish(config.TopicRoot+"/trap", string(trapJSON))
 	}
 }
 
@@ -512,7 +592,6 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload adapterRequest) error
 	var result interface{}
 	var err error
 
-	//TODO - Determine if operation should be in topic structure
 	operation := payload.SnmpOperation
 
 	switch operation {
@@ -521,17 +600,7 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload adapterRequest) error
 	case snmpGetNextOperation:
 		result, err = connection.GetNext(payload.SnmpOIDs) // returns (result *SnmpPacket, err error)
 	case snmpGetBulk:
-		// if payload.SnmpGetBulkNonRepeaters == 0 {
-		// 	//TODO see about defaulting
-		// 	err = errors.New("snmpGetBulkNonRepeaters not provided in payload. Cannot execute getbulk operation")
-		// }
-
-		// //TODO see about defaulting
-		// if payload.SnmpGetBulkMaxRepetitions == 0 {
-		// 	err = errors.New("snmpGetBulkMaxRepetitions not provided in payload. Cannot execute getbulk operation")
-		// }
-
-		result, err = connection.GetBulk(payload.SnmpOIDs, payload.SnmpGetBulkNonRepeaters, payload.SnmpGetBulkMaxRepetitions) // returns (result *SnmpPacket, err error)
+		result, err = connection.GetBulk(payload.SnmpOIDs, uint8(connection.NonRepeaters), connection.MaxRepetitions) // returns (result *SnmpPacket, err error)
 	case snmpSetOperation:
 		//Will need to account for data type specified in Mib.
 
@@ -576,7 +645,12 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload adapterRequest) error
 		fmt.Printf("Unsupported type: %v", v)
 	}
 
-	sendResponse(createJSONFromPDUs(pdus))
+	response := createJSONFromPDUs(pdus)
+	response["request"] = payload
+
+	log.Printf("[DEBUG] executeSnmpOperation - response: %+v\n", response)
+
+	sendResponse(response)
 	return nil
 }
 
@@ -584,17 +658,33 @@ func createJSONFromPDUs(variables []snmp.SnmpPDU) map[string]interface{} {
 	pduJSON := make(map[string]interface{})
 
 	for _, variable := range variables {
+		pduJSON[variable.Name] = map[string]interface{}{
+			"asn1berType": variable.Type,
+		}
 		switch variable.Type {
 		case snmp.OctetString:
 			//TODO - Need to figure out how to transform to string
 			// OID: .1.3.6.1.6.3.10.2.1.1.0
 			// decodeValue: type is OctetString
 			// decodeValue: value is []byte{0x80, 0x0, 0x1f, 0x88, 0x80, 0x38, 0xf7, 0xc1, 0x4b, 0x33, 0x7b, 0xcc, 0x5d, 0x0, 0x0, 0x0, 0x0}
-			pduJSON[variable.Name] = variable.Value.([]byte)
+			pduJSON[variable.Name].(map[string]interface{})["value"] = variable.Value.([]byte)
 		default:
-			pduJSON[variable.Name] = variable.Value
+			pduJSON[variable.Name].(map[string]interface{})["value"] = variable.Value
 		}
 	}
 
 	return pduJSON
+}
+
+func convertSnmpVersion(versionNum uint8) snmp.SnmpVersion {
+	switch versionNum {
+	case 1:
+		return snmp.Version1
+	case 2:
+		return snmp.Version2c
+	case 3:
+		return snmp.Version3
+	default:
+		return snmp.Version3
+	}
 }
