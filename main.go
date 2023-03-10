@@ -18,8 +18,8 @@ import (
 	cb "github.com/clearblade/Go-SDK"
 	mqttTypes "github.com/clearblade/mqtt_parsing"
 	mqtt "github.com/clearblade/paho.mqtt.golang"
+	snmp "github.com/gosnmp/gosnmp"
 	"github.com/hashicorp/logutils"
-	snmp "github.com/soniah/gosnmp"
 )
 
 const (
@@ -291,8 +291,8 @@ func initCbClient(platformBroker cbPlatformBroker) error {
 	return nil
 }
 
-//If the connection to the broker is lost, we need to reconnect and
-//re-establish all of the subscriptions
+// If the connection to the broker is lost, we need to reconnect and
+// re-establish all of the subscriptions
 func onConnectLost(client mqtt.Client, connerr error) {
 	log.Printf("[INFO] OnConnectLost - Connection to broker was lost: %s\n", connerr.Error())
 
@@ -311,8 +311,8 @@ func onConnectLost(client mqtt.Client, connerr error) {
 	// interruptChannel <- syscall.SIGINT
 }
 
-//When the connection to the broker is complete, set up any subscriptions
-//and authenticate the google pubsub client
+// When the connection to the broker is complete, set up any subscriptions
+// and authenticate the google pubsub client
 func onConnect(client mqtt.Client) {
 	log.Println("[INFO] OnConnect - Connected to ClearBlade Platform MQTT broker")
 
