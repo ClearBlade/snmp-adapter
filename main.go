@@ -18,8 +18,15 @@ import (
 	cb "github.com/clearblade/Go-SDK"
 	mqttTypes "github.com/clearblade/mqtt_parsing"
 	mqtt "github.com/clearblade/paho.mqtt.golang"
-	snmp "github.com/gosnmp/gosnmp"
 	"github.com/hashicorp/logutils"
+
+	// snmp "github.com/soniah/gosnmp"
+	// DEPRECATED
+	// DWB changed to point to new Github repo for gosnmp code
+	// "github.com/gosnmp/gosnmp"
+
+	"github.com/gosnmp/gosnmp"
+	snmp "github.com/gosnmp/gosnmp"
 )
 
 const (
@@ -106,7 +113,9 @@ type snmpConnectionSettings struct {
 	// Unless MaxRepetitions is specified it will use defaultMaxRepetitions (50)
 	// This may cause issues with some devices, if so set MaxRepetitions lower.
 	// See comments in https://github.com/soniah/gosnmp/issues/100
-	SnmpMaxRepetitions uint8 `json:"snmpMaxRepetitions"`
+	// SnmpMaxRepetitions uint8 `json:"snmpMaxRepetitions"`
+	// DWB changed to avoid type mismatch -- maybe caused by new SNMP library?
+	SnmpMaxRepetitions uint32 `json:"snmpMaxRepetitions"`
 
 	// NonRepeaters sets the GETBULK max-repeaters used by BulkWalk*
 	// (default: 0 as per RFC 1905)
@@ -136,11 +145,19 @@ type snmpConnectionSettings struct {
 }
 
 type adapterRequest struct {
-	Target   string   `json:"snmpAddress"`
-	Port     uint16   `json:"snmpPort"`
+	Target string `json:"snmpAddress"`
+	Port   uint16 `json:"snmpPort"`
+	// SnmpOIDs is a slice of type string []string `json:"snmpOIDs"`
 	SnmpOIDs []string `json:"snmpOIDs"`
 
-	//The SNMP operation to invoke. One of get, getnext, getbulk, set, walk, walkall, bulkwalk, bulkwalkall
+	// DB added code to create values for the setType and setValue key:values
+	// These will only be available in the IA Control messages
+	// Type only works is hard coded as Integer: ANS1BER = 2 for now
+	SnmpSetType  int    `json:"setType"`
+	SnmpSetValue uint16 `json:"setValue"`
+
+	//The SNMP operation to invoke.
+	//One of get, getnext, getbulk, set, walk, walkall, bulkwalk, bulkwalkall
 	SnmpOperation string `json:"snmpOperation"`
 
 	snmpConnectionSettings
@@ -500,7 +517,8 @@ func getConnection(payload adapterRequest) (*snmp.GoSNMP, error) {
 	// SecurityParameters: payload.snmpConnectionSettings.SnmpSecurityParameters,
 
 	if logLevel == "debug" {
-		params.Logger = log.New(os.Stdout, "", 0)
+		gosnmp.Default.Logger = gosnmp.NewLogger(log.New(os.Stdout, "", 0))
+		// DWB changed to NewLogger as per SNMP library update
 	}
 
 	return params, params.Connect()
@@ -550,7 +568,9 @@ func createTrapServer(config *adapterConfig) {
 	}
 
 	if logLevel == "debug" {
-		trapServer.Params.Logger = log.New(os.Stdout, "", 0)
+		// trapServer.Params.Logger = log.New(os.Stdout, "", 0)
+		// DWB changed to use New Logger as per SNMP library update
+		trapServer.Params.Logger = gosnmp.NewLogger(log.New(os.Stdout, "", 0))
 	}
 
 	err := trapServer.Listen("0.0.0.0:" + strconv.Itoa(int(config.Port)))
@@ -592,6 +612,18 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload adapterRequest) error
 	var result interface{}
 	var err error
 
+	//	type Asn1BER byte
+
+	// Asn1BER's - http://www.ietf.org/rfc/rfc1442.txt
+	//	const (
+	//		EndOfContents Asn1BER = 0x00
+	//		UnknownType   Asn1BER = 0x00
+	//		Boolean       Asn1BER = 0x01
+	//		Integer       Asn1BER = 0x02
+	//		BitString     Asn1BER = 0x03
+	//		OctetString   Asn1BER = 0x04
+	//	)
+
 	operation := payload.SnmpOperation
 
 	switch operation {
@@ -602,16 +634,35 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload adapterRequest) error
 	case snmpGetBulk:
 		result, err = connection.GetBulk(payload.SnmpOIDs, uint8(connection.NonRepeaters), connection.MaxRepetitions) // returns (result *SnmpPacket, err error)
 	case snmpSetOperation:
-		//Will need to account for data type specified in Mib.
-
+		// create a pdu structure to be passed to the Set command
+		val := int(payload.SnmpSetValue)
+		name := payload.SnmpOIDs[0]
+		setType := payload.SnmpSetType
+		var a_type gosnmp.Asn1BER = 0
+		switch setType {
+		case 2:
+			a_type = gosnmp.Integer
+		default:
+			log.Println("[DEBUG] Asn1BER type provided is NOT SUPPORTED1")
+		}
+		// Will need to account for diverse data types specified in Mib.
+		// Works with Integer type for now
 		// pdu := snmp.SnmpPDU{
-		// 	Name:  payload["snmpOIDs"].([]string)[0],
-		// 	Type:  OctetString,
-		// 	Value: trapTestPayload,
+		//	Name:  setOID,
+		//	Type:  2,     0x02 is AnsBer type integer, OctetString is 0x04,
+		//	Value: payload.SnmpSetValue,
 		// }
-		// result, err = connection.Set //(payload["snmpOIDs"].([]string)) // returns (result *SnmpPacket, err error)
 
-		err = errors.New("SNMP set currently not supported") // returns error
+		pdu := snmp.SnmpPDU{
+			Value: val, //payload.SnmpSetValue,
+			Name:  name,
+			Type:  a_type, // payload.SnmpSetType e.g. 0x02 is AnsBer type integer, OctetString is 0x04,
+		}
+		var setPdu []snmp.SnmpPDU
+		setPdu = append(setPdu, pdu)
+		// func (x *GoSNMP) Set(pdus []SnmpPDU) (result *SnmpPacket, err error)
+		result, err = connection.Set(setPdu) // returns (result *SnmpPacket, err error)
+
 	case snmpWalkOperation:
 		err = errors.New("SNMP walk currently not supported") // returns error
 	case snmpWalkAllOperation:
