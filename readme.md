@@ -153,14 +153,30 @@ In order to compile the adapter for execution, the following steps need to be pe
  1. Retrieve the adapter source code  
     * ```git clone git@github.com:ClearBlade/GooglePubSubAdapter.git```
  2. Navigate to the __SNMP-ADAPTER__ directory  
-    * ```cd GooglePubSubAdapter```
- 3. ```go get -u github.com/ClearBlade/Go-SDK```
-    * This command should be executed from within your Go workspace
- 4. ```go get -u github.com/soniah/gosnmp```
- 5. Compile the adapter
-    * ```go build -o snmpAdapter```
+    * ```cd SNMP-Adapter```
+ 3. ```go get```
+ 4. Compile the adapter
+    * ```go build```
 
 ### Payloads
+
+#### SNMP JSON PDU structure
+The adapter request and response will contain an array of SNMP PDU-like JSON structures. The format of the PDU structure will contain the following fields:
+##### name
+ * The OID in string format
+ * ex. '.1.1.1.1.1.1'
+##### type
+ * The Asn1BER data type, represented as an integer
+ *
+##### value
+ * The value for the associated OID
+
+##### Example JSON PDU
+{
+  name: '.1.1.1.1.1.1',
+  type: 2,
+  value: 4
+}
 
 #### Supported SNMP Operations
  * SNMP GET - snmpOperation="get"
@@ -180,7 +196,7 @@ The attributes inclueded with a SNMP request will be dependent upon the SNMP ope
 * Defaults to 161
 
 ###### snmpOIDs
-* An array of OIDs the request will be executed against
+* An array of JSON PDUs (see format above) the request will be executed against
 
 ###### snmpOperation
 * The SNMP operation to execute
@@ -247,7 +263,18 @@ The attributes inclueded with a SNMP request will be dependent upon the SNMP ope
 {
   snmpAddress: "192.168.1.1",
   snmpPort: 161,
-  snmpOIDs: ["myoid"],
+  snmpOIDs: [
+    {
+      name: ".1.1.1.1.1.1",
+      type: 2,
+      value: 4
+    },
+    {
+      name: ".1.1.1.1.1.2",
+      type: 2,
+      value: 6
+    }
+  ],
   snmpVersion: 2,
   snmpCommunity: "mycommunity"
   snmpOperation: "get"
@@ -255,7 +282,8 @@ The attributes inclueded with a SNMP request will be dependent upon the SNMP ope
 ```
 
 #### SNMP Response
-The response of a SNMP operation will contain the original request as well as the data returned by the agent for each OID requested. The value and ASN.1 data types of each OID will be returned in an object indexed by the OID.
+The response of a SNMP operation will contain the original request as well as an array of JSON PDUs representing the data returned by the agent for each OID requested.
+
 ```
 {
   "request": {
@@ -268,10 +296,20 @@ The response of a SNMP operation will contain the original request as well as th
     snmpGetBulkNonRepeaters:    //The first N objects can be retrieved with a simple getnext command
     snmpGetBulkMaxRepetitions:  //Attempt up to M getnext operations to retrieve the remaining objects
   },
-  ".1.3.6.1.6.3.1.1.6.1.0":{
-    "value": 663205133,
-    "asn1berType":
-  }
+  success: true,
+  error: '',
+  snmpOIDs: [
+    {
+      name: ".1.1.1.1.1.1",
+      type: 2,
+      value: 4
+    },
+    {
+      name: ".1.1.1.1.1.2",
+      type: 2,
+      value: 6
+    }
+  ]
 }
 ```
 
