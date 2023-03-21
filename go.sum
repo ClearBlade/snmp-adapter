@@ -1,7 +1,7 @@
-github.com/clearblade/Go-SDK v0.0.0-20211102204418-b07beccdda68 h1:jWKZ0F4YR7yFT4B39pHChRQfIaMT/tAS0A2VbFmU0NY=
-github.com/clearblade/Go-SDK v0.0.0-20211102204418-b07beccdda68/go.mod h1:KByFsQUrafel53AhheIy5KflUpcqPeyPFqMQNwuwuS0=
-github.com/clearblade/adapter-go-library v0.0.2 h1:wnfJkXbFNXEVSaR+F4LsKB6jgk0syAbEDEyrIhtBunA=
-github.com/clearblade/adapter-go-library v0.0.2/go.mod h1:AKhCh+WeMcnpQooNtlHW6gJnJ7BVBzP24PYRxXjfqvs=
+github.com/clearblade/Go-SDK/v3 v3.4.1 h1:krOoLxkeONdmbZuIexUJJtgDTj7zUPfqRStuF5U1Tlc=
+github.com/clearblade/Go-SDK/v3 v3.4.1/go.mod h1:WLsDxaQbVsaN57l7Ek46RyemZE4EzYShvIouzM15Efo=
+github.com/clearblade/adapter-go-library v0.0.1 h1:hGL9weM6qpL/ptVfbiQOPc+NEfDX6r0bhD61nituWvU=
+github.com/clearblade/adapter-go-library v0.0.1/go.mod h1:Pe8HtHGj/Ja7RK9eQC3/FGEcATeFDExRIKIervKjdiI=
 github.com/clearblade/go-utils v1.1.4 h1:/pcYKVTAJ5RcXRZnVENNdUZUKCoZRa3OVhbyer/aHiY=
 github.com/clearblade/go-utils v1.1.4/go.mod h1:neQH1vakc/9y8BORrnWgSnBAQFBCS2U8OT3f47oM/YU=
 github.com/clearblade/mqtt_parsing v0.0.0-20160301165118-6ae49eac0961 h1:/T6Cq3XSwmuFoN6GDoPWgGpNW5X0Idx49DbfQazRUOQ=
@@ -19,8 +19,14 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/stretchr/testify v1.7.1 h1:5TQK59W5E3v0r2duFAb7P95B6hEeOyEnHRa8MjYSMTY=
 golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
 golang.org/x/net v0.0.0-20191209160850-c0dbc17a3553/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+golang.org/x/net v0.0.0-20211020060615-d418f374d309/go.mod h1:9nx3DQGgdP8bBQD5qxJ1jj9UTztislL4KSBs9R2vV5Y=
 golang.org/x/net v0.0.0-20211101193420-4a448f8816b3 h1:VrJZAjbekhoRn7n5FBujY31gboH+iB3pdLxn3gE9FjU=
 golang.org/x/net v0.0.0-20211101193420-4a448f8816b3/go.mod h1:9nx3DQGgdP8bBQD5qxJ1jj9UTztislL4KSBs9R2vV5Y=
 golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+golang.org/x/sys v0.0.0-20201119102817-f84b799fce68/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+golang.org/x/sys v0.0.0-20210423082822-04245dca01da/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
 golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+golang.org/x/text v0.3.6/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
 gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c h1:dUUwHk2QECo/6vqA44rthZ8ie2QXMNeKRTHCNY2nXvo=

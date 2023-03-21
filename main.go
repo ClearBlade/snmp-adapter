@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"reflect"
 	"strconv"
 	"syscall"
 	"time"
@@ -19,16 +20,18 @@ import (
 	snmp "github.com/gosnmp/gosnmp"
 )
 
-type snmpAdapterSettingsType struct {
-	ShouldHandleTraps      bool   `json:"shouldHandleTraps"`
-	Port                   uint16 `json:"trapServerPort"`
-	SnmpConnectionSettings snmpConnectionSettingsType
-}
+// TODO:
+// 4. Add agent name to mqtt topics
+// 5. Periodically re-initialize adapter_library
 
-type snmpConnectionSettingsType struct {
-	//Transport protocol to use ("udp" or "tcp"); if unset "udp" will be used.
-	SnmpTransport string `json:"snmpTransport"`
+type snmpAgentMapType map[string]snmpAgentSettingsType
 
+type snmpAgentSettingsType struct {
+	ShouldHandleTraps bool   `json:"shouldHandleTraps"`
+	TrapServerPort    uint16 `json:"trapServerPort"`
+	Target            string `json:"snmpAddress"`
+	ConnectionPort    uint16 `json:"connectionPort"`
+	Transport         string `json:"snmpTransport"` //Transport protocol to use ("udp" or "tcp"); if unset "udp" will be used.
 	//SNMP Version - 1, 2 or 3
 	SnmpVersion uint8 `json:"snmpVersion"`
 
@@ -51,8 +54,6 @@ type snmpConnectionSettingsType struct {
 	// Unless MaxRepetitions is specified it will use defaultMaxRepetitions (50)
 	// This may cause issues with some devices, if so set MaxRepetitions lower.
 	// See comments in https://github.com/soniah/gosnmp/issues/100
-	// SnmpMaxRepetitions uint8 `json:"snmpMaxRepetitions"`
-	// DWB changed to avoid type mismatch -- maybe caused by new SNMP library?
 	SnmpMaxRepetitions uint32 `json:"snmpMaxRepetitions"`
 
 	// NonRepeaters sets the GETBULK max-repeaters used by BulkWalk*
@@ -63,7 +64,6 @@ type snmpConnectionSettingsType struct {
 	//
 	// - 'c: do not check returned OIDs are increasing' - use AppOpts = map[string]interface{"c":true} with
 	//   Walk() or BulkWalk(). The library user needs to implement their own policy for terminating walks.
-	// - 'p,i,I,t,E' -> pull requests welcome
 	SnmpAppOpts map[string]interface{} `json:"snmpAppOpts"`
 
 	// MsgFlags is an SNMPV3 MsgFlags - Describes Authentication, Privacy, and whether a report PDU must be sent
@@ -83,16 +83,9 @@ type snmpConnectionSettingsType struct {
 }
 
 type snmpAdapterRequestType struct {
-	Target string `json:"snmpAddress"`
-	Port   uint16 `json:"snmpPort"`
-	// SnmpOIDs is a slice of type string []string `json:"snmpOIDs"`
-	SnmpOIDs []snmpJsonPDUType `json:"snmpOIDs"`
-
-	//The SNMP operation to invoke.
-	//One of get, getnext, getbulk, set, walk, walkall, bulkwalk, bulkwalkall
-	SnmpOperation string `json:"snmpOperation"`
-
-	snmpConnectionSettings snmpConnectionSettingsType
+	SnmpAgent     string            `json:"snmpAgent"`
+	SnmpOIDs      []snmpJsonPDUType `json:"snmpOIDs"`
+	SnmpOperation string            `json:"snmpOperation"` //The SNMP operation to invoke. One of get, getnext, getbulk, set, walk, walkall, bulkwalk, bulkwalkall
 }
 
 type snmpJsonPDUType struct {
@@ -115,28 +108,20 @@ type snmpAdapterResponseType struct {
 }
 
 const (
-	platURL                        = "http://localhost:9000"
-	messURL                        = "localhost:1883"
-	msgSubscribeQos                = 0
-	msgPublishQos                  = 0
-	defaultTopicRoot               = "snmp"
-	adapterConfigCollectionDefault = "adapter_config"
-	defaultSnmpTargetPort          = 161
-	defaultTrapServerPort          = 162
-	defaultSnmpTimeout             = time.Duration(2) * time.Second
-	snmpGetOperation               = "get"
-	snmpGetNextOperation           = "getnext"
-	snmpGetBulk                    = "getbulk"
-	snmpSetOperation               = "set"
-	snmpGetResponseOperation       = "getresponse"  //TODO:Not implemented, sent by SNMP agents
-	snmpTrapOperation              = "trap"         //TODO:Not implemented, sent by SNMP agents
-	snmpNotificationOperation      = "notification" //TODO:Not implemented, sent by SNMP agents
-	snmpInformOperation            = "inform"       //TODO:Not implemented, sent by SNMP agents
-	snmpReportOperation            = "report"       //TODO:Not implemented, SNMP v3 only
-	snmpWalkOperation              = "walk"         //TODO:
-	snmpWalkAllOperation           = "walkall"      //TODO:
-	snmpBulkWalkOperation          = "bulkwalk"     //TODO:
-	snmpBulkWalkAllOperation       = "bulkwalkall"  //TODO:
+	defaultTopicRoot          = "snmp"
+	snmpGetOperation          = "get"
+	snmpGetNextOperation      = "getnext"
+	snmpGetBulk               = "getbulk"
+	snmpSetOperation          = "set"
+	snmpGetResponseOperation  = "getresponse"  //TODO:Not implemented, sent by SNMP agents
+	snmpTrapOperation         = "trap"         //TODO:Not implemented, sent by SNMP agents
+	snmpNotificationOperation = "notification" //TODO:Not implemented, sent by SNMP agents
+	snmpInformOperation       = "inform"       //TODO:Not implemented, sent by SNMP agents
+	snmpReportOperation       = "report"       //TODO:Not implemented, SNMP v3 only
+	snmpWalkOperation         = "walk"         //TODO:
+	snmpWalkAllOperation      = "walkall"      //TODO:
+	snmpBulkWalkOperation     = "bulkwalk"     //TODO:
+	snmpBulkWalkAllOperation  = "bulkwalkall"  //TODO:
 )
 
 var (
@@ -144,10 +129,13 @@ var (
 	adapterName     = "snmp-adapter"
 	logLevel        string //Defaults to info
 	adapterConfig   *adapter_library.AdapterConfig
-	adapterSettings snmpAdapterSettingsType
+	adapterSettings snmpAgentMapType
+	timerLength     = time.Second * 60 * 15 //15 minute timer to refresh adapter settings
+	initTimer       = time.NewTimer(timerLength)
 
-	//SNMP specific variables
-	trapServer *snmp.TrapListener
+	//gosnmp specific variables
+	snmpAgents  = map[string]interface{}{}
+	trapServers = map[string]interface{}{}
 )
 
 func main() {
@@ -158,6 +146,44 @@ func main() {
 		log.Fatalf("[FATAL] Failed to parse arguments: %s\n", err.Error())
 	}
 
+	initAdapterLibrary()
+
+	//Start a timer to periodically re-initialize the adapter_library to re-retrieve the adapter settings
+	log.Printf("[INFO] Creating timer of %d seconds to refresh the adapter settings", timerLength)
+	go func() {
+		<-initTimer.C
+		initAdapterLibrary()
+	}()
+
+	//Connect to the MQTT broker and subscribe to the request topic
+	err = adapter_library.ConnectMQTT(adapterConfig.TopicRoot+"/+/request", cbMessageHandler)
+	if err != nil {
+		log.Fatalf("[FATAL] Failed to connect MQTT: %s\n", err.Error())
+	}
+
+	// wait for signal to stop/kill process to allow for graceful shutdown
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-c
+
+	log.Printf("[INFO] OS signal %s received, gracefully shutting down adapter.\n", sig)
+	//Stop the timer
+	if !initTimer.Stop() {
+		<-initTimer.C
+	}
+
+	//Close all trap servers
+	if len(trapServers) > 0 {
+		for _, trapServer := range trapServers {
+			trapServer.(*snmp.TrapListener).Close()
+		}
+	}
+
+	os.Exit(0)
+}
+
+func initAdapterLibrary() {
+	var err error
 	adapterConfig, err = adapter_library.Initialize()
 	if err != nil {
 		log.Fatalf("[FATAL] Failed to initialize: %s\n", err.Error())
@@ -168,29 +194,40 @@ func main() {
 		log.Fatalf("[FATAL] Failed to parse Adapter Settings: %s\n", err.Error())
 	}
 
-	//Connect to the MQTT broker and subscribe to the request topic
-	err = adapter_library.ConnectMQTT(adapterConfig.TopicRoot+"/request", cbMessageHandler)
-	if err != nil {
-		log.Fatalf("[FATAL] Failed to connect MQTT: %s\n", err.Error())
+	processAdapterSettings()
+}
+
+func processAdapterSettings() {
+	for key, agent := range adapterSettings {
+		//First validate the settings
+		if ok, error := agentSettingsAreValid(agent); ok {
+
+			//Recreate all agents and trap servers if settings change
+			if agentExists := agentExists(key); !agentExists || agentSettingsHaveChanged(key, agent) {
+
+				//Stop and delete the existing trap server
+				if trapServerExists(key) {
+					log.Printf("[DEBUG] Deleting trap server for agent %s\n", key)
+					trapServers[key].(*snmp.TrapListener).Close()
+					delete(trapServers, key)
+				}
+
+				if agentExists {
+					log.Printf("[DEBUG] Deleting snmp agent for agent %s\n", key)
+					delete(snmpAgents, key)
+				}
+				log.Printf("[INFO] Creating snmp agent for agent %s\n", key)
+				createAgent(key)
+
+				if agent.ShouldHandleTraps {
+					log.Printf("[INFO] Starting trap server on port %d for agent %s\n", agent.TrapServerPort, key)
+					go createTrapServer(key)
+				}
+			}
+		} else {
+			log.Printf("[Error] Invalid settings for agent: %s\n", error.Error())
+		}
 	}
-
-	if adapterSettings.ShouldHandleTraps == true {
-		log.Printf("[INFO] applyAdapterConfig - Starting trap server on port %d\n", adapterSettings.Port)
-		go createTrapServer()
-	}
-
-	// wait for signal to stop/kill process to allow for graceful shutdown
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-c
-
-	log.Printf("[INFO] OS signal %s received, gracefully shutting down adapter.\n", sig)
-	//Close
-	if trapServer != nil {
-		trapServer.Close()
-	}
-
-	os.Exit(0)
 }
 
 // This function is invoked whenever a message is received on the {adapterConfig.TopicRoot}/request topic
@@ -208,13 +245,21 @@ func cbMessageHandler(message *mqttTypes.Publish) {
 }
 
 // This function is responsible for processing requests sent to the adapter
-func handleRequest(topic mqtt_parsing.TopicPath, jsonPayload snmpAdapterRequestType) {
-	if connection, err := getSnmpConnection(jsonPayload); err != nil {
-		sendErrorResponse(jsonPayload, "Error creating SNMP Connection: "+err.Error())
-	} else {
-		if err := executeSnmpOperation(connection, jsonPayload); err != nil {
-			sendErrorResponse(jsonPayload, err.Error())
+func handleRequest(topic mqtt_parsing.TopicPath, payload snmpAdapterRequestType) {
+	if payload.SnmpAgent != "" {
+		if agentExists(payload.SnmpAgent) {
+			if connection, err := getSnmpConnection(payload.SnmpAgent); err != nil {
+				sendErrorResponse(payload, "Error creating SNMP Connection: "+err.Error())
+			} else {
+				if err := executeSnmpOperation(connection, payload); err != nil {
+					sendErrorResponse(payload, err.Error())
+				}
+			}
+		} else {
+			log.Printf("[ERROR] agent with name %s does not exist. Cannot connect to agent", payload.SnmpAgent)
 		}
+	} else {
+		log.Println("[ERROR] snmpAgent not specified in request. Cannot execute SNMP operation")
 	}
 }
 
@@ -232,72 +277,80 @@ func cbPublish(topic string, data string) error {
 }
 
 // This function is responsible for creating a connection to the SNMP server
-func getSnmpConnection(payload snmpAdapterRequestType) (*snmp.GoSNMP, error) {
+func createAgent(agentName string) {
 	log.Println("[DEBUG] getConnection - Verifying connection parameters")
 
-	if payload.Target == "" {
-		log.Printf("[ERROR] getConnection - snmpAddress not specified in incoming payload: %+v\n", payload)
-		return nil, errors.New("snmpAddress not specified in incoming payload")
+	params := snmp.Default
+
+	log.Printf("[DEBUG] createAgent - SNMP version set to %+v\n", params.Version)
+
+	params.Target = adapterSettings[agentName].Target
+
+	if adapterSettings[agentName].ConnectionPort > 0 {
+		params.Port = adapterSettings[agentName].ConnectionPort
 	}
 
-	//TODO: May need to make this required for only SNMP V1
-	if payload.snmpConnectionSettings.SnmpCommunity == "" {
-		log.Printf("[ERROR] getConnection - snmpCommunity not specified in incoming payload: %+v\n", payload)
-		return nil, errors.New("snmpCommunity not specified in incoming payload")
+	if adapterSettings[agentName].Transport != "" {
+		params.Transport = adapterSettings[agentName].Transport
 	}
 
-	if payload.snmpConnectionSettings.SnmpVersion == 0 {
-		log.Printf("[ERROR] getConnection - snmpVersion not specified in incoming payload: %+v\n", payload)
-		return nil, errors.New("snmpVersion not specified in incoming payload")
+	if adapterSettings[agentName].SnmpCommunity != "" {
+		params.Community = adapterSettings[agentName].SnmpCommunity
 	}
 
-	params := &snmp.GoSNMP{
-		Target:             payload.Target,
-		Port:               payload.Port,
-		Community:          payload.snmpConnectionSettings.SnmpCommunity,
-		Timeout:            time.Duration(payload.snmpConnectionSettings.SnmpTimeout) * time.Second,
-		Version:            convertSnmpVersion(payload.snmpConnectionSettings.SnmpVersion),
-		Retries:            payload.snmpConnectionSettings.SnmpRetries,
-		ExponentialTimeout: payload.snmpConnectionSettings.SnmpExponentialTimeout,
-		MaxOids:            payload.snmpConnectionSettings.SnmpMaxOids,
-		MaxRepetitions:     payload.snmpConnectionSettings.SnmpMaxRepetitions,
-		NonRepeaters:       payload.snmpConnectionSettings.SnmpNonRepeaters,
-		AppOpts:            payload.snmpConnectionSettings.SnmpAppOpts,
-		ContextEngineID:    payload.snmpConnectionSettings.SnmpContextEngineID,
-		ContextName:        payload.snmpConnectionSettings.SnmpContextName,
+	if adapterSettings[agentName].SnmpTimeout > 0 {
+		params.Timeout = time.Duration(adapterSettings[agentName].SnmpTimeout) * time.Second
 	}
 
-	log.Printf("[DEBUG] getConnection - SNMP version set to %+v\n", params.Version)
+	params.Version = convertSnmpVersion(adapterSettings[agentName].SnmpVersion)
+	params.ExponentialTimeout = adapterSettings[agentName].SnmpExponentialTimeout
 
-	if payload.Port == 0 {
-		params.Port = defaultSnmpTargetPort
+	if adapterSettings[agentName].SnmpRetries > 0 {
+		params.Retries = adapterSettings[agentName].SnmpRetries
 	}
 
-	if payload.snmpConnectionSettings.SnmpTransport == "tcp" ||
-		payload.snmpConnectionSettings.SnmpTransport == "udp" {
-		params.Transport = payload.snmpConnectionSettings.SnmpTransport
-	} else {
-		//Defaulting occurs in validateParameters method of GoSNMP
-		log.Println("[DEBUG] getConnection - Transport defaulted to udp")
+	if adapterSettings[agentName].SnmpMaxOids > 0 {
+		params.MaxOids = adapterSettings[agentName].SnmpMaxOids
 	}
 
-	if payload.snmpConnectionSettings.SnmpTimeout == 0 {
-		params.Timeout = defaultSnmpTimeout
+	if adapterSettings[agentName].SnmpMaxRepetitions > 0 {
+		params.MaxRepetitions = adapterSettings[agentName].SnmpMaxRepetitions
 	}
 
-	//TODO: Implement when needed
-	//
-	//if params.Version == snmp.Version3 {
-	// MsgFlags:           payload.snmpConnectionSettings.SnmpMsgFlags,
-	// SecurityModel:      payload.snmpConnectionSettings.SnmpSecurityModel,
-	// SecurityParameters: payload.snmpConnectionSettings.SnmpSecurityParameters,
-	//}
+	if adapterSettings[agentName].SnmpNonRepeaters > 0 {
+		params.NonRepeaters = adapterSettings[agentName].SnmpNonRepeaters
+	}
+
+	if adapterSettings[agentName].SnmpAppOpts != nil {
+		params.AppOpts = adapterSettings[agentName].SnmpAppOpts
+	}
+
+	if params.Version == snmp.Version3 {
+		// 	MsgFlags SnmpV3MsgFlags
+		if adapterSettings[agentName].SnmpMsgFlags > 0 {
+			params.MsgFlags = snmp.SnmpV3MsgFlags(adapterSettings[agentName].SnmpMsgFlags)
+		}
+
+		if adapterSettings[agentName].SnmpSecurityModel > 0 {
+			params.SecurityModel = snmp.SnmpV3SecurityModel(adapterSettings[agentName].SnmpSecurityModel)
+		}
+		//TODO: Implement these as needed
+		// 	SecurityParameters SnmpV3SecurityParameters
+		// 	ContextEngineID string
+		// 	ContextName string
+
+	}
 
 	if logLevel == "debug" {
-		gosnmp.Default.Logger = snmp.NewLogger(log.New(os.Stdout, "", 0))
+		params.Logger = snmp.NewLogger(log.New(os.Stdout, "", 0))
 	}
+	snmpAgents[agentName] = params
 
-	return params, params.Connect()
+	log.Printf("[DEBUG] createAgent - Agent created %+v\n", params)
+}
+
+func getSnmpConnection(agentName string) (*snmp.GoSNMP, error) {
+	return snmpAgents[agentName].(*snmp.GoSNMP), snmpAgents[agentName].(*gosnmp.GoSNMP).Connect()
 }
 
 // This function is responsible for returning a successful SNMP response to the invoking client
@@ -305,7 +358,11 @@ func sendResponse(returnData snmpAdapterResponseType) {
 	response, err := json.Marshal(returnData)
 
 	if err == nil {
-		cbPublish(adapterConfig.TopicRoot+"/response", string(response))
+		if returnData.Request.SnmpAgent != "" {
+			cbPublish(adapterConfig.TopicRoot+"/"+returnData.Request.SnmpAgent+"/response", string(response))
+		} else {
+			cbPublish(adapterConfig.TopicRoot+"/unknownAgent/response", string(response))
+		}
 	} else {
 		log.Printf("[ERROR] sendResponse - Error marshalling JSON: %s\n", err.Error())
 	}
@@ -321,56 +378,49 @@ func sendErrorResponse(request snmpAdapterRequestType, error string) {
 	})
 
 	if err == nil {
-		cbPublish(adapterConfig.TopicRoot+"/error", string(response))
+		if request.SnmpAgent != "" {
+			cbPublish(adapterConfig.TopicRoot+"/"+request.SnmpAgent+"/error", string(response))
+		} else {
+			cbPublish(adapterConfig.TopicRoot+"/unknownAgent/error", string(response))
+		}
 	} else {
 		log.Printf("[ERROR] sendErrorResponse - Error marshalling JSON: %s\n", err.Error())
 	}
 }
 
 // This function is responsible for creating a SNMP trap server
-func createTrapServer() {
-	trapServer = snmp.NewTrapListener()
+func createTrapServer(agentName string) {
+	var trapServer = snmp.NewTrapListener()
 	trapServer.OnNewTrap = SnmpTrapHandler
 
-	//TODO: Determine which of these we can get rid of
-	trapServer.Params = &snmp.GoSNMP{
-		Port:               adapterSettings.Port,
-		Community:          adapterSettings.SnmpConnectionSettings.SnmpCommunity,
-		Timeout:            time.Duration(adapterSettings.SnmpConnectionSettings.SnmpTimeout) * time.Second,
-		Version:            convertSnmpVersion(adapterSettings.SnmpConnectionSettings.SnmpVersion),
-		Retries:            adapterSettings.SnmpConnectionSettings.SnmpRetries,
-		ExponentialTimeout: adapterSettings.SnmpConnectionSettings.SnmpExponentialTimeout,
-		MaxOids:            adapterSettings.SnmpConnectionSettings.SnmpMaxOids,
-		MaxRepetitions:     adapterSettings.SnmpConnectionSettings.SnmpMaxRepetitions,
-		NonRepeaters:       adapterSettings.SnmpConnectionSettings.SnmpNonRepeaters,
-		AppOpts:            adapterSettings.SnmpConnectionSettings.SnmpAppOpts,
-		ContextEngineID:    adapterSettings.SnmpConnectionSettings.SnmpContextEngineID,
-		ContextName:        adapterSettings.SnmpConnectionSettings.SnmpContextName,
-	}
+	trapServer.Params = snmpAgents[agentName].(*snmp.GoSNMP)
 
-	if logLevel == "debug" {
-		trapServer.Params.Logger = gosnmp.NewLogger(log.New(os.Stdout, "", 0))
-	}
-
-	err := trapServer.Listen("0.0.0.0:" + strconv.Itoa(int(adapterSettings.Port)))
+	err := trapServer.Listen("0.0.0.0:" + strconv.Itoa(int(adapterSettings[agentName].TrapServerPort)))
 	if err != nil {
 		log.Printf("[ERROR] createTrapServer - Error encountered invoking trapServer.listen: %s\n", err)
 		log.Panicf("Error encountered invoking trapServer.listen: %s\n", err)
 	}
+
+	trapServers[agentName] = trapServer
 }
 
 // This function is responsible for handling any received SNMP traps
 func SnmpTrapHandler(packet *snmp.SnmpPacket, addr *net.UDPAddr) {
 	log.Printf("[DEBUG] snmpTrapHandler - Received SNMP trap from %s\n", addr.IP)
-	log.Printf("[DEBUG] snmpTrapHandler - Trap data received: %+v\n", packet.Variables)
+	log.Printf("[DEBUG] snmpTrapHandler - Trap data received: %+v\n", packet)
+	log.Printf("[DEBUG] snmpTrapHandler - addr data received: %+v\n", addr)
 
 	//Publish trap data
 	var trapData []snmpJsonPDUType = createJSONFromPDUs(packet.Variables)
-	fmt.Printf("[DEBUG] formatTrap - Publishing trap data: %+v\n", trapData)
+	fmt.Printf("[DEBUG] SnmpTrapHandler - Publishing trap data: %+v\n", trapData)
 	if trapJSON, err := json.Marshal(trapData); err != nil {
-		log.Printf("[ERROR] formatTrap - Error marshalling JSON trap data: %s\n", err.Error())
+		log.Printf("[ERROR] SnmpTrapHandler - Error marshalling JSON trap data: %s\n", err.Error())
 	} else {
-		cbPublish(adapterConfig.TopicRoot+"/trap", string(trapJSON))
+		if agent := getAgentForTrap(addr.IP.String()); agent != "" {
+			cbPublish(adapterConfig.TopicRoot+"/"+agent+"/trap", string(trapJSON))
+		} else {
+			log.Printf("[ERROR] SnmpTrapHandler - Agent with IP address %s does not exist. Cannot process SNMP trap", addr.IP.String())
+		}
 	}
 }
 
@@ -500,7 +550,7 @@ func createJSONFromPDUs(pdus []snmp.SnmpPDU) []snmpJsonPDUType {
 		// snmp.OctetString: //Asn1BER = 0x04, Returned as byte[] by snmp library
 		switch pdu.Type {
 		case snmp.OctetString, snmp.Opaque: //Asn1BER = 0x04, Returned as byte[] by snmp library
-			pduJSON[ndx].Value = pdu.Value.([]byte)
+			pduJSON[ndx].Value = string(pdu.Value.([]byte))
 		default:
 			pduJSON[ndx].Value = pdu.Value
 		}
@@ -582,6 +632,176 @@ func convertSnmpVersion(versionNum uint8) snmp.SnmpVersion {
 	case 3:
 		return snmp.Version3
 	default:
-		return snmp.Version3
+		return snmp.Version2c
 	}
+}
+
+// Validates the agent settings in the adapter config collection
+func agentSettingsAreValid(settings snmpAgentSettingsType) (bool, error) {
+	//Target is required
+	if settings.Target == "" {
+		return false, fmt.Errorf("target is empty")
+	}
+
+	if settings.ShouldHandleTraps && settings.TrapServerPort == 0 {
+		log.Println("[DEBUG] NonRepeaters has changed, returning true")
+		return false, fmt.Errorf("trap server port not provided")
+	}
+
+	//Port - not required, will default to 161 in snmp.Default
+	//Transport - not required, will default to "udp" in snmp.Default
+	//Community - not required, will default to "public" in snmp.Default
+	//Version - not required, will default to Version2c in snmp.Default
+	//Timeout - not required, will default to 2 seconds in snmp.Default
+	//Retries - not required, will default to 3 in snmp.Default
+	//ExponentialTimeout - not required, will default to true in snmp.Default
+	//MaxOids - not required, will default to MaxOids in snmp.Default
+	//MaxRepetitions - not required, will default to defaultMaxRepetitions in snmp.Default
+	//NonRepeaters - not required, will default to 0 in snmp.Default
+	//UseUnconnectedUDPSocket - not required, will default to false in snmp.Default
+	//AppOpts map[string]interface{} - option "c" is the only option currently supported by gosnmp
+	if settings.SnmpAppOpts != nil && settings.SnmpAppOpts["c"] != nil && reflect.TypeOf(settings.SnmpAppOpts["c"]).Kind() != reflect.Bool {
+		return false, fmt.Errorf("boolean value not passec for SnmpAppOpts option c")
+	}
+
+	//TODO: Add validations for the SNMP V3 fields. Not sure which of these can be passed in or which ones
+	// are generated automatically
+	//
+	//if settings.SnmpVersion == uint8(snmp.Version3) {
+	//MsgFlags SnmpV3MsgFlags
+	//SecurityModel SnmpV3SecurityModel
+	//SecurityParameters SnmpV3SecurityParameters
+	//ContextEngineID - not required, will default
+	//ContextName string
+	//}
+	return true, nil
+}
+
+func agentSettingsHaveChanged(agentName string, settings snmpAgentSettingsType) bool {
+	log.Printf("[DEBUG] Comparing settings for SNMP agent %s", agentName)
+
+	var agent = snmpAgents[agentName].(snmp.GoSNMP)
+
+	if agent.Target != settings.Target {
+		log.Println("[DEBUG] Target field has changed, returning true")
+		return true
+	}
+
+	if settings.ConnectionPort > 0 && agent.Port != settings.ConnectionPort {
+		log.Println("[DEBUG] ConnectionPort has changed, returning true")
+		return true
+	}
+
+	if settings.Transport != "" && agent.Transport != settings.Transport {
+		log.Println("[DEBUG] ConnectionTransport has changed, returning true")
+		return true
+	}
+
+	if convertSnmpVersion(settings.SnmpVersion) != agent.Version {
+		log.Println("[DEBUG] Version has changed, returning true")
+		return true
+	}
+
+	if settings.SnmpCommunity != "" && agent.Community != settings.SnmpCommunity {
+		log.Println("[DEBUG] Community has changed, returning true")
+		return true
+	}
+
+	if settings.SnmpRetries > 0 && agent.Retries != settings.SnmpRetries {
+		log.Println("[DEBUG] Timeout has changed, returning true")
+		return true
+	}
+
+	if agent.ExponentialTimeout != settings.SnmpExponentialTimeout {
+		log.Println("[DEBUG] ExponentialTimeout has changed, returning true")
+		return true
+	}
+
+	if settings.SnmpMaxOids > 0 && agent.MaxOids != settings.SnmpMaxOids {
+		log.Println("[DEBUG] MaxOids has changed, returning true")
+		return true
+	}
+
+	if settings.SnmpMaxRepetitions > 0 && agent.MaxRepetitions != settings.SnmpMaxRepetitions {
+		log.Println("[DEBUG] MaxRepetitions has changed, returning true")
+		return true
+	}
+
+	if settings.SnmpNonRepeaters > 0 && agent.NonRepeaters != settings.SnmpNonRepeaters {
+		log.Println("[DEBUG] NonRepeaters has changed, returning true")
+		return true
+	}
+
+	// SnmpAppOpts map[string]interface{} `json:"snmpAppOpts"`
+	var settingOpts bool
+	var agentOps bool
+	if settings.SnmpAppOpts != nil && settings.SnmpAppOpts["c"] != nil {
+		settingOpts = settings.SnmpAppOpts["c"].(bool)
+	}
+
+	if agent.AppOpts != nil && agent.AppOpts["c"] != nil {
+		agentOps = agent.AppOpts["c"].(bool)
+	}
+
+	if settingOpts != agentOps {
+		log.Println("[DEBUG] AppOpts['c'] has changed, returning true")
+		return true
+	}
+
+	//Check all version 3 specific flags
+	if agent.Version == snmp.Version3 {
+		if settings.SnmpSecurityModel > 0 && settings.SnmpSecurityModel != uint8(agent.SecurityModel) {
+			log.Println("[DEBUG] SecurityModel has changed, returning true")
+			return true
+		}
+
+		//TODO: Not sure if these should be checked
+		// SnmpSecurityParameters map[string]interface{} `json:"snmpSecurityParameters"`
+		// SnmpContextEngineID string `json:"snmpContextEngineID"`
+		// SnmpContextName string `json:"snmpContextName"`
+	}
+
+	if serverExists := trapServerExists(agentName); serverExists {
+		if !settings.ShouldHandleTraps {
+			log.Println("[DEBUG] Trap server exists and ShouldHandleTraps == false, returning true")
+			return true
+		} else {
+			//See if the trapServer port has changed
+			if settings.TrapServerPort > 0 && trapServers[agentName].(*gosnmp.TrapListener).Params.Port != settings.TrapServerPort {
+				log.Println("[DEBUG] Trap server port changed, returning true")
+				return true
+			}
+		}
+	} else {
+		if settings.ShouldHandleTraps {
+			log.Println("[DEBUG] Trap server does not exist and ShouldHandleTraps == true, returning true")
+			return true
+		}
+	}
+	return false
+}
+
+func agentExists(agentName string) bool {
+	return attributeExistsInMap(agentName, snmpAgents)
+}
+
+func trapServerExists(agentName string) bool {
+	return attributeExistsInMap(agentName, trapServers)
+}
+
+func attributeExistsInMap(attrName string, theMap map[string]interface{}) bool {
+	if _, ok := theMap[attrName]; ok {
+		return true
+	}
+	return false
+}
+
+func getAgentForTrap(trapIp string) string {
+	log.Printf("[DEBUG] Finding agent name for IP %s", trapIp)
+	for agentName, agent := range snmpAgents {
+		if agent.(*gosnmp.GoSNMP).Target == trapIp {
+			return agentName
+		}
+	}
+	return ""
 }
