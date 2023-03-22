@@ -7,10 +7,12 @@ The adapter utilizes MQTT topics to provide the mechanism whereby the ClearBlade
 # MQTT Topic Structure
 The __snmpAdapter__ adapter utilizes MQTT messaging to communicate with the ClearBlade Platform. The __snmpAdapter__ adapter will subscribe to a specific topic in order to handle requests from the ClearBlade Platform/Edge to interact with SNMP agents. In addition, the adapter has the capability to start a SNMP trap server to receive SNMP traps from SNMP agents and send the SNMP trap data to the ClearBlade Platform or ClearBlade Edge. The topic structures utilized by the __snmpAdapter__ are as follows:
 
-  * Send SNMP Request to __snmpAdapter__: {__TOPIC ROOT__}/request
-  * Send SNMP Response to Clearblade: {__TOPIC ROOT__}/response
-  * Send SNMP errors to Clearblade: {__TOPIC ROOT__}/error
-  * Send SNMP trap to platform/edge: {__TOPIC ROOT__}/trap
+  * Send SNMP Request to __snmpAdapter__: {__TOPIC ROOT__}/__{AGENT_NAME}__/request
+  * Send SNMP Response to Clearblade: {__TOPIC ROOT__}/__{AGENT_NAME}__/response
+  * Send SNMP errors to Clearblade: {__TOPIC ROOT__}/__{AGENT_NAME}__/error
+  * Send SNMP trap to platform/edge: {__TOPIC ROOT__}/__{AGENT_NAME}__/trap
+
+  * Note: If the adapter is unable to determine the agent name, the __{AGENT_NAME}__ part of the topic will contain _unknownAgent_
 
 
 ## ClearBlade Platform Dependencies
