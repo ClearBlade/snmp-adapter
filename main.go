@@ -130,8 +130,7 @@ var (
 	logLevel        string //Defaults to info
 	adapterConfig   *adapter_library.AdapterConfig
 	adapterSettings snmpAgentMapType
-	timerLength     = time.Second * 60 * 15 //15 minute timer to refresh adapter settings
-	initTimer       = time.NewTimer(timerLength)
+	tickerLength    = time.Second * 60 * 15 //15 minute timer to refresh adapter settings
 
 	//gosnmp specific variables
 	snmpAgents  = map[string]interface{}{}
@@ -140,19 +139,35 @@ var (
 
 func main() {
 	fmt.Println("Starting snmpAdapter...")
+	var err error
 
-	err := adapter_library.ParseArguments(adapterName)
+	err = adapter_library.ParseArguments(adapterName)
 	if err != nil {
 		log.Fatalf("[FATAL] Failed to parse arguments: %s\n", err.Error())
 	}
 
-	initAdapterLibrary()
+	adapterConfig, err = adapter_library.Initialize()
+	if err != nil {
+		log.Fatalf("[FATAL] Failed to initialize: %s\n", err.Error())
+	}
+
+	processAdapterSettings()
 
 	//Start a timer to periodically re-initialize the adapter_library to re-retrieve the adapter settings
-	log.Printf("[INFO] Creating timer of %d seconds to refresh the adapter settings", timerLength)
+	log.Printf("[INFO] Creating ticker of %d seconds to refresh the adapter settings", tickerLength)
+	initTicker := time.NewTicker(tickerLength)
+	quit := make(chan struct{})
 	go func() {
-		<-initTimer.C
-		initAdapterLibrary()
+		for {
+			select {
+			case <-initTicker.C:
+				adapter_library.FetchAdapterConfig()
+				processAdapterSettings()
+			case <-quit:
+				initTicker.Stop()
+				return
+			}
+		}
 	}()
 
 	//Connect to the MQTT broker and subscribe to the request topic
@@ -168,11 +183,11 @@ func main() {
 
 	log.Printf("[INFO] OS signal %s received, gracefully shutting down adapter.\n", sig)
 	//Stop the timer
-	if !initTimer.Stop() {
-		<-initTimer.C
-	}
+	log.Println("[DEBUG] Stopping the initTicker")
+	close(quit)
 
 	//Close all trap servers
+	log.Println("[DEBUG] Closing all trap servers")
 	if len(trapServers) > 0 {
 		for _, trapServer := range trapServers {
 			trapServer.(*snmp.TrapListener).Close()
@@ -182,29 +197,22 @@ func main() {
 	os.Exit(0)
 }
 
-func initAdapterLibrary() {
-	var err error
-	adapterConfig, err = adapter_library.Initialize()
-	if err != nil {
-		log.Fatalf("[FATAL] Failed to initialize: %s\n", err.Error())
-	}
-
-	err = json.Unmarshal([]byte(adapterConfig.AdapterSettings), &adapterSettings)
+func processAdapterSettings() {
+	newSettings := snmpAgentMapType{}
+	err := json.Unmarshal([]byte(adapterConfig.AdapterSettings), &newSettings)
 	if err != nil {
 		log.Fatalf("[FATAL] Failed to parse Adapter Settings: %s\n", err.Error())
 	}
 
-	processAdapterSettings()
-}
+	//Remove agents and trap servers that are no longer needed
+	cleanUpAgentsAndTrapServers(newSettings)
 
-func processAdapterSettings() {
-	for key, agent := range adapterSettings {
+	//Create agents and trap servers based on the new settings
+	for key, agentSettings := range newSettings {
 		//First validate the settings
-		if ok, error := agentSettingsAreValid(agent); ok {
-
+		if ok, error := agentSettingsAreValid(agentSettings); ok {
 			//Recreate all agents and trap servers if settings change
-			if agentExists := agentExists(key); !agentExists || agentSettingsHaveChanged(key, agent) {
-
+			if agentExists := agentExists(key); !agentExists || agentSettingsHaveChanged(key, adapterSettings[key], agentSettings) {
 				//Stop and delete the existing trap server
 				if trapServerExists(key) {
 					log.Printf("[DEBUG] Deleting trap server for agent %s\n", key)
@@ -217,17 +225,19 @@ func processAdapterSettings() {
 					delete(snmpAgents, key)
 				}
 				log.Printf("[INFO] Creating snmp agent for agent %s\n", key)
-				createAgent(key)
+				createAgent(key, agentSettings)
 
-				if agent.ShouldHandleTraps {
-					log.Printf("[INFO] Starting trap server on port %d for agent %s\n", agent.TrapServerPort, key)
-					go createTrapServer(key)
+				if agentSettings.ShouldHandleTraps {
+					log.Printf("[INFO] Starting trap server on port %d for agent %s\n", agentSettings.TrapServerPort, key)
+					go createTrapServer(key, agentSettings)
 				}
 			}
 		} else {
 			log.Printf("[Error] Invalid settings for agent: %s\n", error.Error())
 		}
 	}
+
+	adapterSettings = newSettings
 }
 
 // This function is invoked whenever a message is received on the {adapterConfig.TopicRoot}/request topic
@@ -277,62 +287,60 @@ func cbPublish(topic string, data string) error {
 }
 
 // This function is responsible for creating a connection to the SNMP server
-func createAgent(agentName string) {
-	log.Println("[DEBUG] getConnection - Verifying connection parameters")
+func createAgent(agentName string, settings snmpAgentSettingsType) {
+	//We need to dereference the pointer so that we do a deep copy, otherwise we
+	//end up modifying the reference and changing the values of other agents
+	params := *snmp.Default
 
-	params := snmp.Default
+	params.Target = settings.Target
 
-	log.Printf("[DEBUG] createAgent - SNMP version set to %+v\n", params.Version)
-
-	params.Target = adapterSettings[agentName].Target
-
-	if adapterSettings[agentName].ConnectionPort > 0 {
-		params.Port = adapterSettings[agentName].ConnectionPort
+	if settings.ConnectionPort > 0 {
+		params.Port = settings.ConnectionPort
 	}
 
-	if adapterSettings[agentName].Transport != "" {
-		params.Transport = adapterSettings[agentName].Transport
+	if settings.Transport != "" {
+		params.Transport = settings.Transport
 	}
 
-	if adapterSettings[agentName].SnmpCommunity != "" {
-		params.Community = adapterSettings[agentName].SnmpCommunity
+	if settings.SnmpCommunity != "" {
+		params.Community = settings.SnmpCommunity
 	}
 
-	if adapterSettings[agentName].SnmpTimeout > 0 {
-		params.Timeout = time.Duration(adapterSettings[agentName].SnmpTimeout) * time.Second
+	if settings.SnmpTimeout > 0 {
+		params.Timeout = time.Duration(settings.SnmpTimeout) * time.Second
 	}
 
-	params.Version = convertSnmpVersion(adapterSettings[agentName].SnmpVersion)
-	params.ExponentialTimeout = adapterSettings[agentName].SnmpExponentialTimeout
+	params.Version = convertSnmpVersion(settings.SnmpVersion)
+	params.ExponentialTimeout = settings.SnmpExponentialTimeout
 
-	if adapterSettings[agentName].SnmpRetries > 0 {
-		params.Retries = adapterSettings[agentName].SnmpRetries
+	if settings.SnmpRetries > 0 {
+		params.Retries = settings.SnmpRetries
 	}
 
-	if adapterSettings[agentName].SnmpMaxOids > 0 {
-		params.MaxOids = adapterSettings[agentName].SnmpMaxOids
+	if settings.SnmpMaxOids > 0 {
+		params.MaxOids = settings.SnmpMaxOids
 	}
 
-	if adapterSettings[agentName].SnmpMaxRepetitions > 0 {
-		params.MaxRepetitions = adapterSettings[agentName].SnmpMaxRepetitions
+	if settings.SnmpMaxRepetitions > 0 {
+		params.MaxRepetitions = settings.SnmpMaxRepetitions
 	}
 
-	if adapterSettings[agentName].SnmpNonRepeaters > 0 {
-		params.NonRepeaters = adapterSettings[agentName].SnmpNonRepeaters
+	if settings.SnmpNonRepeaters > 0 {
+		params.NonRepeaters = settings.SnmpNonRepeaters
 	}
 
-	if adapterSettings[agentName].SnmpAppOpts != nil {
-		params.AppOpts = adapterSettings[agentName].SnmpAppOpts
+	if settings.SnmpAppOpts != nil {
+		params.AppOpts = settings.SnmpAppOpts
 	}
 
 	if params.Version == snmp.Version3 {
 		// 	MsgFlags SnmpV3MsgFlags
-		if adapterSettings[agentName].SnmpMsgFlags > 0 {
-			params.MsgFlags = snmp.SnmpV3MsgFlags(adapterSettings[agentName].SnmpMsgFlags)
+		if settings.SnmpMsgFlags > 0 {
+			params.MsgFlags = snmp.SnmpV3MsgFlags(settings.SnmpMsgFlags)
 		}
 
-		if adapterSettings[agentName].SnmpSecurityModel > 0 {
-			params.SecurityModel = snmp.SnmpV3SecurityModel(adapterSettings[agentName].SnmpSecurityModel)
+		if settings.SnmpSecurityModel > 0 {
+			params.SecurityModel = snmp.SnmpV3SecurityModel(settings.SnmpSecurityModel)
 		}
 		//TODO: Implement these as needed
 		// 	SecurityParameters SnmpV3SecurityParameters
@@ -344,9 +352,10 @@ func createAgent(agentName string) {
 	if logLevel == "debug" {
 		params.Logger = snmp.NewLogger(log.New(os.Stdout, "", 0))
 	}
-	snmpAgents[agentName] = params
+	snmpAgents[agentName] = &params
 
 	log.Printf("[DEBUG] createAgent - Agent created %+v\n", params)
+	log.Printf("[DEBUG] createAgent - SNMP version set to %+v\n", params.Version)
 }
 
 func getSnmpConnection(agentName string) (*snmp.GoSNMP, error) {
@@ -389,19 +398,17 @@ func sendErrorResponse(request snmpAdapterRequestType, error string) {
 }
 
 // This function is responsible for creating a SNMP trap server
-func createTrapServer(agentName string) {
+func createTrapServer(agentName string, settings snmpAgentSettingsType) {
 	var trapServer = snmp.NewTrapListener()
 	trapServer.OnNewTrap = SnmpTrapHandler
-
 	trapServer.Params = snmpAgents[agentName].(*snmp.GoSNMP)
 
-	err := trapServer.Listen("0.0.0.0:" + strconv.Itoa(int(adapterSettings[agentName].TrapServerPort)))
+	trapServers[agentName] = trapServer
+
+	err := trapServer.Listen("0.0.0.0:" + strconv.Itoa(int(settings.TrapServerPort)))
 	if err != nil {
 		log.Printf("[ERROR] createTrapServer - Error encountered invoking trapServer.listen: %s\n", err)
-		log.Panicf("Error encountered invoking trapServer.listen: %s\n", err)
 	}
-
-	trapServers[agentName] = trapServer
 }
 
 // This function is responsible for handling any received SNMP traps
@@ -636,6 +643,23 @@ func convertSnmpVersion(versionNum uint8) snmp.SnmpVersion {
 	}
 }
 
+func cleanUpAgentsAndTrapServers(newSettings snmpAgentMapType) {
+	for key, _ := range adapterSettings {
+		//See if an agent that existed in the previous adapter settings has been removed
+		//from the new settings
+		if _, ok := newSettings[key]; !ok {
+			//If a trap server exists for the old agent, close it and remove it
+			if trapServerExists(key) {
+				log.Printf("[DEBUG] Deleting trap server for agent %s\n", key)
+				trapServers[key].(*snmp.TrapListener).Close()
+				delete(trapServers, key)
+			}
+			//Remove the agent
+			delete(snmpAgents, key)
+		}
+	}
+}
+
 // Validates the agent settings in the adapter config collection
 func agentSettingsAreValid(settings snmpAgentSettingsType) (bool, error) {
 	//Target is required
@@ -677,108 +701,8 @@ func agentSettingsAreValid(settings snmpAgentSettingsType) (bool, error) {
 	return true, nil
 }
 
-func agentSettingsHaveChanged(agentName string, settings snmpAgentSettingsType) bool {
-	log.Printf("[DEBUG] Comparing settings for SNMP agent %s", agentName)
-
-	var agent = snmpAgents[agentName].(snmp.GoSNMP)
-
-	if agent.Target != settings.Target {
-		log.Println("[DEBUG] Target field has changed, returning true")
-		return true
-	}
-
-	if settings.ConnectionPort > 0 && agent.Port != settings.ConnectionPort {
-		log.Println("[DEBUG] ConnectionPort has changed, returning true")
-		return true
-	}
-
-	if settings.Transport != "" && agent.Transport != settings.Transport {
-		log.Println("[DEBUG] ConnectionTransport has changed, returning true")
-		return true
-	}
-
-	if convertSnmpVersion(settings.SnmpVersion) != agent.Version {
-		log.Println("[DEBUG] Version has changed, returning true")
-		return true
-	}
-
-	if settings.SnmpCommunity != "" && agent.Community != settings.SnmpCommunity {
-		log.Println("[DEBUG] Community has changed, returning true")
-		return true
-	}
-
-	if settings.SnmpRetries > 0 && agent.Retries != settings.SnmpRetries {
-		log.Println("[DEBUG] Timeout has changed, returning true")
-		return true
-	}
-
-	if agent.ExponentialTimeout != settings.SnmpExponentialTimeout {
-		log.Println("[DEBUG] ExponentialTimeout has changed, returning true")
-		return true
-	}
-
-	if settings.SnmpMaxOids > 0 && agent.MaxOids != settings.SnmpMaxOids {
-		log.Println("[DEBUG] MaxOids has changed, returning true")
-		return true
-	}
-
-	if settings.SnmpMaxRepetitions > 0 && agent.MaxRepetitions != settings.SnmpMaxRepetitions {
-		log.Println("[DEBUG] MaxRepetitions has changed, returning true")
-		return true
-	}
-
-	if settings.SnmpNonRepeaters > 0 && agent.NonRepeaters != settings.SnmpNonRepeaters {
-		log.Println("[DEBUG] NonRepeaters has changed, returning true")
-		return true
-	}
-
-	// SnmpAppOpts map[string]interface{} `json:"snmpAppOpts"`
-	var settingOpts bool
-	var agentOps bool
-	if settings.SnmpAppOpts != nil && settings.SnmpAppOpts["c"] != nil {
-		settingOpts = settings.SnmpAppOpts["c"].(bool)
-	}
-
-	if agent.AppOpts != nil && agent.AppOpts["c"] != nil {
-		agentOps = agent.AppOpts["c"].(bool)
-	}
-
-	if settingOpts != agentOps {
-		log.Println("[DEBUG] AppOpts['c'] has changed, returning true")
-		return true
-	}
-
-	//Check all version 3 specific flags
-	if agent.Version == snmp.Version3 {
-		if settings.SnmpSecurityModel > 0 && settings.SnmpSecurityModel != uint8(agent.SecurityModel) {
-			log.Println("[DEBUG] SecurityModel has changed, returning true")
-			return true
-		}
-
-		//TODO: Not sure if these should be checked
-		// SnmpSecurityParameters map[string]interface{} `json:"snmpSecurityParameters"`
-		// SnmpContextEngineID string `json:"snmpContextEngineID"`
-		// SnmpContextName string `json:"snmpContextName"`
-	}
-
-	if serverExists := trapServerExists(agentName); serverExists {
-		if !settings.ShouldHandleTraps {
-			log.Println("[DEBUG] Trap server exists and ShouldHandleTraps == false, returning true")
-			return true
-		} else {
-			//See if the trapServer port has changed
-			if settings.TrapServerPort > 0 && trapServers[agentName].(*gosnmp.TrapListener).Params.Port != settings.TrapServerPort {
-				log.Println("[DEBUG] Trap server port changed, returning true")
-				return true
-			}
-		}
-	} else {
-		if settings.ShouldHandleTraps {
-			log.Println("[DEBUG] Trap server does not exist and ShouldHandleTraps == true, returning true")
-			return true
-		}
-	}
-	return false
+func agentSettingsHaveChanged(agentName string, oldSettings snmpAgentSettingsType, newSettings snmpAgentSettingsType) bool {
+	return !reflect.DeepEqual(oldSettings, newSettings)
 }
 
 func agentExists(agentName string) bool {

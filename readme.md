@@ -29,26 +29,53 @@ Once a System has been created, artifacts must be defined within the ClearBlade 
 | adapter_settings | string (json)   |
 
 ### adapter_settings
-The adapter_settings column will need to contain a JSON object containing the following attributes:
+The adapter_settings column will need to contain a JSON object. The keys of the obect will be the names of the agents (SNMP devices) the adapter will send commands to. The values for each of the keys will be a JSON object containing the following attributes:
 
 ##### shouldHandleTraps
 * A boolean value indicating whether or not the adapter should start a SNMP trap server in order to process SNMP traps from devices
 
 ##### trapServerPort
 * An integer denoting the port number on which the SNMP trap server should listen
-* Will default to 162 if not provided
+* __Will default to 162 if not provided__
+
+##### snmpAddress
+* An integer denoting the port number on which the SNMP trap server should listen
+
+##### connectionPort
+* An integer denoting the port number on which the SNMP connection should be made
+* __Will default to 161 if not provided__
 
 ##### snmpTransport
-* Transport protocol to use ("udp" or "tcp")
-* Will default to _udp_ if not provided
+* Transport protocol to use ("udp" or "tcp") when connecting to the SNMP agent
+* __Will default to _udp_ if not provided__
 
 ##### snmpVersion
 * The SNMP version 
 * 1, 2 or 3
-* Will default to 3
+* __Will default to 2__
 
 ##### snmpCommunity
 *	SNMP Community string
+
+##### snmpTimeout
+* The timeout for the SNMP Query 
+* __Will default to 2 seconds__
+
+##### snmpExponentialTimeout
+* Whether to double timeout in each retry
+* __Will default to false__
+
+##### snmpMaxOids
+* maximum number of oids allowed in a Get
+* __Will default to 0__
+
+##### snmpMaxRepetitions
+* Sets the GETBULK max-repetitions used by BulkWalk
+* __Will default to 50__
+
+##### snmpNonRepeaters
+* NonRepeaters sets the GETBULK max-repeaters used by BulkWalk
+* __Will default to 0__
 
 ##### snmpAppOpts
 * netsnmp has '-C APPOPTS - set various application specific behaviours'
@@ -76,24 +103,38 @@ The adapter_settings column will need to contain a JSON object containing the fo
 
 #### adapter_settings_example
 {
-  "shouldHandleTraps": true,
-  "trapServerPort": 164,
-  "snmpTransport": "udp",
-  "snmpVersion": 2,
-	"snmpCommunity": "public",
-  "snmpAppOpts": {"c": true, "p": true},
-  "snmpMsgFlags": 2,
-  "snmpSecurityModel": 3,
-  "snmpSecurityParameters": {},
-  "snmpContextEngineID": "",
-  "snmpContextName": ""
+  "myFirstSnmpDevice" : {
+    "shouldHandleTraps": true,
+    "trapServerPort": 164,
+    "snmpAddress": "192.168.1.1",
+    "connectionPort": 2164,
+    "snmpTransport": "udp",
+    "snmpVersion": 2,
+	  "snmpCommunity": "public",
+    "snmpAppOpts": {"c": true},
+  },
+  "mySecondSnmpDevice" : {
+    "shouldHandleTraps": true,
+    "trapServerPort": 165,
+    "snmpAddress": "192.168.1.2",
+    "connectionPort": 2165,
+    "snmpTransport": "tcp",
+    "snmpVersion": 3,
+	  "snmpCommunity": "xxyyvvwwn",
+    "snmpMsgFlags": 2,
+    "snmpSecurityModel": 3,
+    "snmpSecurityParameters": {},
+    "snmpContextEngineID": "",
+    "snmpContextName": ""
+  }
 }
+
 
 ## Usage
 
 ### Executing the adapter
 
-`snmpAdapter -systemKey=<SYSTEM_KEY> -systemSecret=<SYSTEM_SECRET> -platformURL=<PLATFORM_URL> -messagingURL=<MESSAGING_URL> -deviceName=<DEVICE_NAME> -password=<DEVICE_ACTIVE_KEY> -adapterConfigCollectionID=<COLLECTION_ID> -logLevel=<LOG_LEVEL>`
+`snmpAdapter -systemKey=<SYSTEM_KEY> -systemSecret=<SYSTEM_SECRET> -platformURL=<PLATFORM_URL> -messagingURL=<MESSAGING_URL> -deviceName=<DEVICE_NAME> -password=<DEVICE_ACTIVE_KEY> -adapterConfigCollection=<COLLECTION_ID> -logLevel=<LOG_LEVEL>`
 
    __*Where*__ 
 
@@ -167,7 +208,7 @@ The adapter request and response will contain an array of SNMP PDU-like JSON str
  * ex. '.1.1.1.1.1.1'
 ##### type
  * The Asn1BER data type, represented as an integer
- *
+
 ##### value
  * The value for the associated OID
 
@@ -178,7 +219,7 @@ The adapter request and response will contain an array of SNMP PDU-like JSON str
   value: 4
 }
 
-#### Supported SNMP Operations
+#### Currently Supported SNMP Operations
  * SNMP GET - snmpOperation="get"
  * SNMP GETNEXT - snmpOperation="getnext"
  * SNMP GETBULK (SNMP v2 and v3) - snmpOperation="getbulk"
@@ -186,14 +227,11 @@ The adapter request and response will contain an array of SNMP PDU-like JSON str
 
 #### SNMP Request
 
-The attributes inclueded with a SNMP request will be dependent upon the SNMP operation being performed. At the very minimum, the following attributes must be inclued in a SNMP request:
+The attributes included in a SNMP request are as follows:
 
-###### snmpAddress
-* The IP address of the SNMP agent the SNMP request will be sent to
-
-###### snmpPort
-* The port the SNMP agent is listening on
-* Defaults to 161
+###### snmpAgent
+* Then name of the SNMP agent that should handle the request
+* __The agent MUST exist in the adapter_settings column of the adapter_config collection__
 
 ###### snmpOIDs
 * An array of JSON PDUs (see format above) the request will be executed against
@@ -202,82 +240,21 @@ The attributes inclueded with a SNMP request will be dependent upon the SNMP ope
 * The SNMP operation to execute
 * One of get, getnext, getbulk, set, walk, walkall, bulkwalk, bulkwalkall
 
-###### snmpTransport
-* Transport protocol to use ("udp" or "tcp")
-* Will default to _udp_ if not provided
-
-###### snmpVersion
-* The SNMP version 
-* 1, 2 or 3
-* Will default to 3
-
-##### Operation specific fields
-
-###### snmpCommunity
-*	SNMP Community string
-* SNMP v1 and v2
-
-###### snmpTimeout
-*	Timeout for the SNMP Query
-
-###### snmpRetries
-*	Number of retries to attempt within timeout
-
-###### snmpExponentialTimeout
-*	Boolean value indicating whether or not to double the timeout in each retry
-
-###### snmpMaxOids
-*	Maximum number of oids allowed in a _Get_
-
-###### snmpMaxRepetitions
-*	sets the GETBULK max-repetitions used by _BulkWalk_
-* Will default to 50
-  * This may cause issues with some devices, if so set MaxRepetitions lower
-
-###### snmpNonRepeaters
-*	sets the GETBULK max-repeaters used by _BulkWalk_
-* Will default to 0 (per RFC 1905)
-
-##### snmpAppOpts
-* netsnmp has '-C APPOPTS - set various application specific behaviours'
-* c: do not check returned OIDs are increasing' - use AppOpts = {"c":true} with _walk_ or _bulkwalk_
-
-##### snmpMsgFlags
-*	SNMPV3 MsgFlags
-  * describe Authentication, Privacy, and whether a report PDU must be sent
-
-##### snmpSecurityModel
-* SecurityModel is an SNMPV3 Security Model
-* UserSecurityModel (=3) is the only one implemented
-
-##### snmpSecurityParameters
-* SNMPV3 Security Model parameters struct
-
-##### snmpContextEngineID
-* SNMPV3 ContextEngineID in ScopedPDU
-
-##### snmpContextName
-* SNMPV3 ContextName in ScopedPDU
 
 ```
 {
-  snmpAddress: "192.168.1.1",
-  snmpPort: 161,
-  snmpOIDs: [
+  "snmpAgent": "MyISPRouter",
+  "snmpOIDs": [
     {
-      name: ".1.1.1.1.1.1",
-      type: 2,
-      value: 4
-    },
+      "name": ".1.3.6.1.4.1.9999.1.1.1",
+      "type": 2
+    }, 
     {
-      name: ".1.1.1.1.1.2",
-      type: 2,
-      value: 6
+      "name": ".1.3.6.1.4.1.9999.1.1.2",
+      "type": 2
     }
   ],
-  snmpVersion: 2,
-  snmpCommunity: "mycommunity"
-  snmpOperation: "get"
+  "snmpOperation": "get
 }
 ```
 
@@ -287,29 +264,33 @@ The response of a SNMP operation will contain the original request as well as an
 ```
 {
   "request": {
-    snmpAddress: ,
-    snmpPort: 161,
-    snmpOIDs: [],
-    snmpVersion: 2,
-    snmpCommunity: 
-    snmpOperation: "get", //get, getnext, getbulk, set
-    snmpGetBulkNonRepeaters:    //The first N objects can be retrieved with a simple getnext command
-    snmpGetBulkMaxRepetitions:  //Attempt up to M getnext operations to retrieve the remaining objects
-  },
-  success: true,
-  error: '',
-  snmpOIDs: [
-    {
-      name: ".1.1.1.1.1.1",
-      type: 2,
-      value: 4
+    "snmpAgent": "MyISPRouter",
+    "snmpOIDs": [
+      {
+        "name": ".1.3.6.1.4.1.9999.1.1.1",
+        "type": 2
+      }, 
+      {
+        "name": ".1.3.6.1.4.1.9999.1.1.2",
+        "type": 2
+      }
+    ],
+    "snmpOperation": "get
     },
-    {
-      name: ".1.1.1.1.1.2",
-      type: 2,
-      value: 6
-    }
-  ]
-}
+    success: true,
+    error: '',
+    snmpOIDs: [
+      {
+        name: ".1.3.6.1.4.1.9999.1.1.1",
+        type: 2,
+        value: 15
+      },
+      {
+        name: ".1.3.6.1.4.1.9999.1.1.2",
+        type: 2,
+        value: 475
+      }
+    ]
+  }
 ```
 
