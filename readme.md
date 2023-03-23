@@ -136,7 +136,7 @@ The adapter_settings column will need to contain a JSON object. The keys of the 
 
 ### Executing the adapter
 
-`snmpAdapter -systemKey=<SYSTEM_KEY> -systemSecret=<SYSTEM_SECRET> -platformURL=<PLATFORM_URL> -messagingURL=<MESSAGING_URL> -deviceName=<DEVICE_NAME> -password=<DEVICE_ACTIVE_KEY> -adapterConfigCollection=<COLLECTION_ID> -logLevel=<LOG_LEVEL>`
+`snmpAdapter -systemKey=<SYSTEM_KEY> -systemSecret=<SYSTEM_SECRET> -platformURL=<PLATFORM_URL> -messagingURL=<MESSAGING_URL> -deviceName=<DEVICE_NAME> -password=<DEVICE_ACTIVE_KEY> -adapterConfigCollection=<COLLECTION_NAME> -logLevel=<LOG_LEVEL>`
 
    __*Where*__ 
 
@@ -152,7 +152,7 @@ The adapter_settings column will need to contain a JSON object. The keys of the 
   * The device name the adapter will use to authenticate to the ClearBlade Platform
   * Requires the device to have been defined in the _Auth - Devices_ collection within the ClearBlade Platform __System__
   * OPTIONAL
-  * Defaults to __snmpAdapter__
+  * Defaults to __snmp-adapter__
    
    __password__
   * REQUIRED
@@ -169,9 +169,10 @@ The adapter_settings column will need to contain a JSON object. The keys of the 
   * OPTIONAL
   * Defaults to __localhost:1883__
 
-   __adapterConfigCollectionID__
-  * REQUIRED 
-  * The collection ID of the data collection used to house adapter configuration data
+   __adapterConfigCollection__
+  * OPTIONAL 
+  * The name of the data collection used to house adapter configuration data
+  * Defaults to adapter_config
 
    __logLevel__
   * The level of runtime logging the adapter should provide.

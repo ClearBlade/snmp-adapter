@@ -1,11 +1,24 @@
-#docker build -f ../docker_build/Dockerfile -t snmpAdapter --target runtime  ../..
+##
+## Build
+##
+FROM golang:alpine AS build
+LABEL description="Build container - snmp-adapter"
 
-FROM alpine:latest
-LABEL description="Runtime container - SNMP-Adapter"
+WORKDIR /app
 
-#Copy the SNMP Adapter binary into the image
-COPY ./snmpAdapter /usr/local/bin/snmpAdapter
+COPY go.mod ./
+COPY go.sum ./
+RUN go mod download
 
-RUN apk --no-cache --update add ca-certificates
+COPY *.go ./
+RUN go build 
 
-ENTRYPOINT ["/usr/local/bin/snmpAdapter"]
+##
+## Deploy
+##
+FROM alpine:latest as runtime
+LABEL description="Runtime container - snmp-adapter"
+
+COPY --from=build /app/snmp-adapter /usr/local/bin/snmp-adapter
+
+ENTRYPOINT ["/usr/local/bin/snmp-adapter"]

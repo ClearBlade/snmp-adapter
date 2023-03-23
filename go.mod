@@ -2,8 +2,6 @@ module clearblade.com/snmp-adapter
 
 go 1.20
 
-replace github.com/clearblade/adapter-go-library => /Users/jim/Documents/AppDev/Repos/Platform/Adapters/adapter-go-library
-
 require (
 	github.com/clearblade/adapter-go-library v0.0.3-0.20230322190145-8e73d29d70d9
 	github.com/clearblade/mqtt_parsing v0.0.0-20160301165118-6ae49eac0961
