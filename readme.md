@@ -212,6 +212,31 @@ The adapter request and response will contain an array of SNMP PDU-like JSON str
 ##### type
  * The Asn1BER data type, represented as an integer
 
+  | Asn1BER Data Type | Integer Value |
+  | ----------------- | ------------- |
+  | EndOfContents     | 0 |
+  | UnknownType       | 0 |
+  | Boolean           | 1 |
+  | Integer           | 2 |
+  | BitString         | 3 |
+  | OctetString       | 4 |
+  | Null              | 5 |
+  | ObjectIdentifier  | 6 |
+  | ObjectDescription | 7 |
+  | IPAddress         | 64 |
+  | Counter32         | 65 |
+  | Gauge32           | 66 |
+  | TimeTicks         | 67 |
+  | Opaque            | 68 |
+  | NsapAddress       | 69 |
+  | Counter64         | 70 |
+  | Uinteger32        | 71 |
+  | OpaqueFloat       | 120 |
+  | OpaqueDouble      | 121 |
+  | NoSuchObject      | 128 |
+  | NoSuchInstance    | 129 |
+  | EndOfMibView      | 130 |
+
 ##### value
  * The value for the associated OID
 
