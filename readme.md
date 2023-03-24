@@ -195,7 +195,7 @@ The __snmpAdapter__ adapter is dependent upon the ClearBlade Go SDK and its depe
 In order to compile the adapter for execution, the following steps need to be performed:
 
  1. Retrieve the adapter source code  
-    * ```git clone git@github.com:ClearBlade/GooglePubSubAdapter.git```
+    * ```git clone git@github.com:ClearBlade/snmp-adapter.git```
  2. Navigate to the __SNMP-ADAPTER__ directory  
     * ```cd SNMP-Adapter```
  3. ```go get```
