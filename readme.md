@@ -38,7 +38,7 @@ The adapter_settings column will need to contain a JSON object. The keys of the 
 
 ##### trapServerPort
 * An integer denoting the port number on which the SNMP trap server should listen
-* __Will default to 162 if not provided__
+* Required if __shouldHandleTraps__ is true
 
 ##### snmpAddress
 * An integer denoting the port number on which the SNMP trap server should listen
@@ -201,6 +201,8 @@ In order to compile the adapter for execution, the following steps need to be pe
  3. ```go get```
  4. Compile the adapter
     * ```go build```
+    * ```GOARCH=arm GOARM=5 GOOS=linux go build```
+    * ```GOARCH=amd64 GOOS=linux go build```
 
 ### Payloads
 
