@@ -20,10 +20,6 @@ import (
 	snmp "github.com/gosnmp/gosnmp"
 )
 
-// TODO:
-// 4. Add agent name to mqtt topics
-// 5. Periodically re-initialize adapter_library
-
 type snmpAgentMapType map[string]snmpAgentSettingsType
 
 type snmpAgentSettingsType struct {
