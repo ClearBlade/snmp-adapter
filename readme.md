@@ -1,13 +1,13 @@
 # SNMP Adapter
 
-The __snmpAdapter__ adapter provides the ability for the ClearBlade platform or ClearBlade Edge to function as a SNMP manager. 
+The __snmp-adapter__ adapter provides the ability for the ClearBlade platform or ClearBlade Edge to function as a SNMP manager. 
 
 The adapter utilizes MQTT topics to provide the mechanism whereby the ClearBlade Platform or ClearBlade Edge can interact with a SNMP network.
 
 # MQTT Topic Structure
-The __snmpAdapter__ adapter utilizes MQTT messaging to communicate with the ClearBlade Platform. The __snmpAdapter__ adapter will subscribe to a specific topic in order to handle requests from the ClearBlade Platform/Edge to interact with SNMP agents. In addition, the adapter has the capability to start a SNMP trap server to receive SNMP traps from SNMP agents and send the SNMP trap data to the ClearBlade Platform or ClearBlade Edge. The topic structures utilized by the __snmpAdapter__ are as follows:
+The __snmp-adapter__ adapter utilizes MQTT messaging to communicate with the ClearBlade Platform. The __snmp-adapter__ adapter will subscribe to a specific topic in order to handle requests from the ClearBlade Platform/Edge to interact with SNMP agents. In addition, the adapter has the capability to start a SNMP trap server to receive SNMP traps from SNMP agents and send the SNMP trap data to the ClearBlade Platform or ClearBlade Edge. The topic structures utilized by the __snmp-adapter__ are as follows:
 
-  * Send SNMP Request to __snmpAdapter__: {__TOPIC ROOT__}/__{AGENT_NAME}__/request
+  * Send SNMP Request to __snmp-adapter__: {__TOPIC ROOT__}/__{AGENT_NAME}__/request
   * Send SNMP Response to Clearblade: {__TOPIC ROOT__}/__{AGENT_NAME}__/response
   * Send SNMP errors to Clearblade: {__TOPIC ROOT__}/__{AGENT_NAME}__/error
   * Send SNMP trap to platform/edge: {__TOPIC ROOT__}/__{AGENT_NAME}__/trap
@@ -136,7 +136,7 @@ The adapter_settings column will need to contain a JSON object. The keys of the 
 
 ### Executing the adapter
 
-`snmpAdapter -systemKey=<SYSTEM_KEY> -systemSecret=<SYSTEM_SECRET> -platformURL=<PLATFORM_URL> -messagingURL=<MESSAGING_URL> -deviceName=<DEVICE_NAME> -password=<DEVICE_ACTIVE_KEY> -adapterConfigCollection=<COLLECTION_NAME> -logLevel=<LOG_LEVEL>`
+`snmp-adapter -systemKey=<SYSTEM_KEY> -systemSecret=<SYSTEM_SECRET> -platformURL=<PLATFORM_URL> -messagingURL=<MESSAGING_URL> -deviceName=<DEVICE_NAME> -password=<DEVICE_ACTIVE_KEY> -adapterConfigCollection=<COLLECTION_NAME> -logLevel=<LOG_LEVEL>`
 
    __*Where*__ 
 
@@ -188,7 +188,7 @@ The adapter_settings column will need to contain a JSON object. The keys of the 
 
 ## Setup
 ---
-The __snmpAdapter__ adapter is dependent upon the ClearBlade Go SDK and its dependent libraries being installed as well as the Go SNMP library (github.com/soniah/gosnmp). The __snmpAdapter__ adapter was written in Go and therefore requires Go to be installed (https://golang.org/doc/install).
+The __snmp-adapter__ adapter is dependent upon the ClearBlade Go SDK and its dependent libraries being installed as well as the Go SNMP library (github.com/soniah/gosnmp). The __snmp-adapter__ adapter was written in Go and therefore requires Go to be installed (https://golang.org/doc/install).
 
 
 ### Adapter compilation

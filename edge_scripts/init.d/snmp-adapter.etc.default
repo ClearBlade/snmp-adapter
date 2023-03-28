@@ -1,0 +1,12 @@
+ADAPTER_NAME=snmp-adapter
+DAEMON=/usr/bin/$ADAPTER_NAME
+PIDFILE=/var/run/$ADAPTER_NAME.pid
+
+#Variables needed to start the snmp-adapter
+DEVICENAME=your_adapter_device_name
+ACTIVE_KEY=your_device_active_key
+SYSTEM_KEY=your_platform_system_key
+SYSTEM_SECRET=your_platform_system_secret
+PLATFORM_URL=http://localhost:9002
+MESSAGING_URL=localhost:1883
+LOG_LEVEL=info

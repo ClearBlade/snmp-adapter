@@ -1,0 +1,13 @@
+[Unit]
+Description=ClearBlade Edge SNMP adapter
+After=network.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/snmp-adapter -systemKey={SYSTEM_KEY} -systemSecret={SYSTEM_SECRET} -platformURL={PLATFORM_URL} -messagingURL={MESSAGING_URL} -deviceName={DEVICE_NAME} -password={DEVICE_ACTIVE_KEY} -logLevel={LOG_LEVEL} -fatalOnDisconnect=true
+User=root
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
