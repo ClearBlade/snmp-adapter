@@ -84,6 +84,19 @@ type snmpAdapterRequestType struct {
 	SnmpOperation string            `json:"snmpOperation"` //The SNMP operation to invoke. One of get, getnext, getbulk, set, walk, walkall, bulkwalk, bulkwalkall
 }
 
+type snmpAdapterResponseType struct {
+	Request  snmpAdapterRequestType `json:"request"`
+	Success  bool                   `json:"success"`
+	Error    string                 `json:"error"`
+	SnmpOIDs []snmpJsonPDUType      `json:"snmpOIDs"`
+}
+
+type snmpTrapType struct {
+	SnmpAgent string            `json:"snmpAgent"`
+	Target    string            `json:"sourceIP"`
+	SnmpOIDs  []snmpJsonPDUType `json:"snmpOIDs"`
+}
+
 type snmpJsonPDUType struct {
 	// The value to be set by the SNMP set, or the value when
 	// sending a trap
@@ -94,13 +107,6 @@ type snmpJsonPDUType struct {
 
 	// The type of the value eg Integer
 	Type int `json:"type"`
-}
-
-type snmpAdapterResponseType struct {
-	Request  snmpAdapterRequestType `json:"request"`
-	Success  bool                   `json:"success"`
-	Error    string                 `json:"error"`
-	SnmpOIDs []snmpJsonPDUType      `json:"snmpOIDs"`
 }
 
 const (
@@ -413,13 +419,20 @@ func SnmpTrapHandler(packet *snmp.SnmpPacket, addr *net.UDPAddr) {
 	log.Printf("[DEBUG] snmpTrapHandler - Trap data received: %+v\n", packet)
 	log.Printf("[DEBUG] snmpTrapHandler - addr data received: %+v\n", addr)
 
+	agent := getAgentForTrap(addr.IP.String())
+
 	//Publish trap data
-	var trapData []snmpJsonPDUType = createJSONFromPDUs(packet.Variables)
+	trapData := snmpTrapType{
+		SnmpAgent: agent,
+		Target:    addr.IP.String(),
+		SnmpOIDs:  createJSONFromPDUs(packet.Variables),
+	}
+
 	fmt.Printf("[DEBUG] SnmpTrapHandler - Publishing trap data: %+v\n", trapData)
 	if trapJSON, err := json.Marshal(trapData); err != nil {
 		log.Printf("[ERROR] SnmpTrapHandler - Error marshalling JSON trap data: %s\n", err.Error())
 	} else {
-		if agent := getAgentForTrap(addr.IP.String()); agent != "" {
+		if agent != "" {
 			cbPublish(adapterConfig.TopicRoot+"/"+agent+"/trap", string(trapJSON))
 		} else {
 			log.Printf("[ERROR] SnmpTrapHandler - Agent with IP address %s does not exist. Cannot process SNMP trap", addr.IP.String())

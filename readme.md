@@ -324,3 +324,23 @@ The response of a SNMP operation will contain the original request as well as an
   }
 ```
 
+#### SNMP Trap
+SNMP Trap data sent from the adapter will have the following format.
+
+```
+{
+  "snmpAgent": "MyISPRouter",
+  "sourceIP": "192.168.1.1",
+  "snmpOIDs": [
+    {
+      "name": ".1.3.6.1.4.1.9999.1.1.1",
+      "type": 2
+    }, 
+    {
+      "name": ".1.3.6.1.4.1.9999.1.1.2",
+      "type": 2
+    }
+  ],
+}
+```
+
