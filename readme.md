@@ -33,6 +33,14 @@ Once a System has been created, artifacts must be defined within the ClearBlade 
 ### adapter_settings
 The adapter_settings column will need to contain a JSON object. The keys of the obect will be the names of the agents (SNMP devices) the adapter will send commands to. The values for each of the keys will be a JSON object containing the following attributes:
 
+##### serialNumberOid
+* __OPTIONAL__
+* The OID representing a SNMP data item that contains the SNMP agent serial number
+
+##### mibModule
+* __OPTIONAL__
+* The name of the MIB file utilized by the SNMP agent
+
 ##### shouldHandleTraps
 * A boolean value indicating whether or not the adapter should start a SNMP trap server in order to process SNMP traps from devices
 
@@ -40,11 +48,11 @@ The adapter_settings column will need to contain a JSON object. The keys of the 
 * An integer denoting the port number on which the SNMP trap server should listen
 * Required if __shouldHandleTraps__ is true
 
-##### snmpAddress
-* An integer denoting the port number on which the SNMP trap server should listen
+###### snmpAddress
+* An string representing the IP address of the SNMP agent where SNMP commands should be sent
 
-##### connectionPort
-* An integer denoting the port number on which the SNMP connection should be made
+###### connectionPort
+* An integer denoting the port number of the SNMP agent where SNMP commands should be sent
 * __Will default to 161 if not provided__
 
 ##### snmpTransport
@@ -106,6 +114,8 @@ The adapter_settings column will need to contain a JSON object. The keys of the 
 #### adapter_settings_example
 {
   "myFirstSnmpDevice" : {
+    "serialNumberOid": ".1.3.6.1.4.1.17095.1.3.4.24",
+    "mibModule": "AE-MIB",
     "shouldHandleTraps": true,
     "trapServerPort": 164,
     "snmpAddress": "192.168.1.1",
@@ -116,6 +126,8 @@ The adapter_settings column will need to contain a JSON object. The keys of the 
     "snmpAppOpts": {"c": true},
   },
   "mySecondSnmpDevice" : {
+    "serialNumberOid": ".1.3.6.1.4.1.17095.1.3.4.24",
+    "mibModule": "AE-MIB",
     "shouldHandleTraps": true,
     "trapServerPort": 165,
     "snmpAddress": "192.168.1.2",
