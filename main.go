@@ -435,7 +435,8 @@ func SnmpTrapHandler(packet *snmp.SnmpPacket, addr *net.UDPAddr) {
 		if agent != "" {
 			cbPublish(adapterConfig.TopicRoot+"/"+agent+"/trap", string(trapJSON))
 		} else {
-			log.Printf("[ERROR] SnmpTrapHandler - Agent with IP address %s does not exist. Cannot process SNMP trap", addr.IP.String())
+			log.Printf("[ERROR] SnmpTrapHandler - Agent with IP address %s does not exist. Publishing with agent = unknown_agent", addr.IP.String())
+			cbPublish(adapterConfig.TopicRoot+"/unknown_agent/trap", string(trapJSON))
 		}
 	}
 }
@@ -457,6 +458,7 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload snmpAdapterRequestTyp
 
 	response := snmpAdapterResponseType{
 		Request: payload,
+		Success: true,
 	}
 	var result interface{}
 	var err error
@@ -527,6 +529,7 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload snmpAdapterRequestTyp
 		response.SnmpOIDs = createJSONFromPDUs(result.([]snmp.SnmpPDU))
 	default:
 		fmt.Printf("Unsupported type: %v", v)
+		return fmt.Errorf("unsupported type: %v", v)
 	}
 
 	log.Printf("[DEBUG] executeSnmpOperation - response: %+v\n", response)
@@ -653,7 +656,7 @@ func convertSnmpVersion(versionNum uint8) snmp.SnmpVersion {
 }
 
 func cleanUpAgentsAndTrapServers(newSettings snmpAgentMapType) {
-	for key, _ := range adapterSettings {
+	for key := range adapterSettings {
 		//See if an agent that existed in the previous adapter settings has been removed
 		//from the new settings
 		if _, ok := newSettings[key]; !ok {
