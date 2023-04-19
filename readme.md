@@ -272,7 +272,7 @@ The adapter request and response will contain an array of SNMP PDU-like JSON str
 The attributes included in a SNMP request are as follows:
 
 ###### snmpAgent
-* Then name of the SNMP agent that should handle the request
+* The name of the SNMP agent that should handle the request
 * __The agent MUST exist in the adapter_settings column of the adapter_config collection__
 
 ###### snmpOIDs
@@ -286,6 +286,7 @@ The attributes included in a SNMP request are as follows:
 ```
 {
   "snmpAgent": "MyISPRouter",
+  "snmpAgentIP": "192.168.1.1",
   "snmpOIDs": [
     {
       "name": ".1.3.6.1.4.1.9999.1.1.1",
@@ -307,6 +308,7 @@ The response of a SNMP operation will contain the original request as well as an
 {
   "request": {
     "snmpAgent": "MyISPRouter",
+    "snmpAgentIP": "192.168.1.1",
     "snmpOIDs": [
       {
         "name": ".1.3.6.1.4.1.9999.1.1.1",

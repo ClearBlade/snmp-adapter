@@ -519,6 +519,7 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload snmpAdapterRequestTyp
 		return err
 	}
 
+	log.Printf("[DEBUG] executeSnmpOperation - SNMP result: %+v\n", result)
 	//Create JSON response - Need to see if the results interface is []SnmpPDU or *SnmpPacket.
 	switch v := result.(type) {
 	case *snmp.SnmpPacket:
