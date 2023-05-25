@@ -3,94 +3,31 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
-	"math/rand"
 	"net"
 	"os"
 	"os/signal"
+	"reflect"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
-	cb "github.com/clearblade/Go-SDK"
+	adapter_library "github.com/clearblade/adapter-go-library"
+	"github.com/clearblade/mqtt_parsing"
 	mqttTypes "github.com/clearblade/mqtt_parsing"
-	mqtt "github.com/clearblade/paho.mqtt.golang"
-	"github.com/hashicorp/logutils"
-
-	// snmp "github.com/soniah/gosnmp"
-	// DEPRECATED
-	// DWB changed to point to new Github repo for gosnmp code
-	// "github.com/gosnmp/gosnmp"
-
 	"github.com/gosnmp/gosnmp"
 	snmp "github.com/gosnmp/gosnmp"
 )
 
-const (
-	platURL                        = "http://localhost:9000"
-	messURL                        = "localhost:1883"
-	msgSubscribeQos                = 0
-	msgPublishQos                  = 0
-	defaultTopicRoot               = "snmp"
-	adapterConfigCollectionDefault = "adapter_config"
-	defaultSnmpTargetPort          = 161
-	defaultTrapServerPort          = 162
-	defaultSnmpTimeout             = time.Duration(2) * time.Second
-	snmpGetOperation               = "get"
-	snmpGetNextOperation           = "getnext"
-	snmpGetBulk                    = "getbulk"
-	snmpSetOperation               = "set"
-	snmpGetResponseOperation       = "getresponse"  //Not implemented, sent by SNMP agents
-	snmpTrapOperation              = "trap"         //Not implemented, sent by SNMP agents
-	snmpNotificationOperation      = "notification" //Not implemented, sent by SNMP agents
-	snmpInformOperation            = "inform"       //Not implemented, sent by SNMP agents
-	snmpReportOperation            = "report"       //Not implemented, SNMP v3 only
-	snmpWalkOperation              = "walk"         //TODO
-	snmpWalkAllOperation           = "walkall"      //TODO
-	snmpBulkWalkOperation          = "bulkwalk"     //TODO
-	snmpBulkWalkAllOperation       = "bulkwalkall"  //TODO
-)
+type snmpAgentMapType map[string]snmpAgentSettingsType
 
-var (
-	//Adapter command line arguments
-	platformURL             string //Defaults to http://localhost:9000
-	messagingURL            string //Defaults to localhost:1883
-	sysKey                  string
-	sysSec                  string
-	deviceName              string //Defaults to snmpAdapter
-	activeKey               string
-	logLevel                string //Defaults to info
-	adapterConfigCollection string
-
-	//SNMP specific variables
-	trapServer *snmp.TrapListener
-
-	//Miscellaneous adapter variables
-	cbBroker           cbPlatformBroker
-	cbSubscribeChannel <-chan *mqttTypes.Publish
-	endWorkersChannel  chan string
-	interruptChannel   chan os.Signal
-	config             adapterConfig
-)
-
-type adapterConfig struct {
-	adapterSettings
-	TopicRoot string `json:"topic_root"`
-}
-
-type adapterSettings struct {
+type snmpAgentSettingsType struct {
 	ShouldHandleTraps bool   `json:"shouldHandleTraps"`
-	Port              uint16 `json:"trapServerPort"`
-	snmpConnectionSettings
-}
-
-type snmpConnectionSettings struct {
-	//Transport protocol to use ("udp" or "tcp"); if unset "udp" will be used.
-	SnmpTransport string `json:"snmpTransport"`
-
+	TrapServerPort    uint16 `json:"trapServerPort"`
+	Target            string `json:"snmpAddress"`
+	ConnectionPort    uint16 `json:"connectionPort"`
+	Transport         string `json:"snmpTransport"` //Transport protocol to use ("udp" or "tcp"); if unset "udp" will be used.
 	//SNMP Version - 1, 2 or 3
 	SnmpVersion uint8 `json:"snmpVersion"`
 
@@ -113,8 +50,6 @@ type snmpConnectionSettings struct {
 	// Unless MaxRepetitions is specified it will use defaultMaxRepetitions (50)
 	// This may cause issues with some devices, if so set MaxRepetitions lower.
 	// See comments in https://github.com/soniah/gosnmp/issues/100
-	// SnmpMaxRepetitions uint8 `json:"snmpMaxRepetitions"`
-	// DWB changed to avoid type mismatch -- maybe caused by new SNMP library?
 	SnmpMaxRepetitions uint32 `json:"snmpMaxRepetitions"`
 
 	// NonRepeaters sets the GETBULK max-repeaters used by BulkWalk*
@@ -125,10 +60,9 @@ type snmpConnectionSettings struct {
 	//
 	// - 'c: do not check returned OIDs are increasing' - use AppOpts = map[string]interface{"c":true} with
 	//   Walk() or BulkWalk(). The library user needs to implement their own policy for terminating walks.
-	// - 'p,i,I,t,E' -> pull requests welcome
 	SnmpAppOpts map[string]interface{} `json:"snmpAppOpts"`
 
-	// MsgFlags is an SNMPV3 MsgFlags - describe Authentication, Privacy, and whether a report PDU must be sent
+	// MsgFlags is an SNMPV3 MsgFlags - Describes Authentication, Privacy, and whether a report PDU must be sent
 	SnmpMsgFlags uint8 `json:"snmpMsgFlags"`
 
 	// SecurityModel is an SNMPV3 Security Model, UserSecurityModel (=3) is the only one implemented
@@ -144,260 +78,207 @@ type snmpConnectionSettings struct {
 	SnmpContextName string `json:"snmpContextName"`
 }
 
-type adapterRequest struct {
-	Target string `json:"snmpAddress"`
-	Port   uint16 `json:"snmpPort"`
-	// SnmpOIDs is a slice of type string []string `json:"snmpOIDs"`
-	SnmpOIDs []string `json:"snmpOIDs"`
-
-	// DB added code to create values for the setType and setValue key:values
-	// These will only be available in the IA Control messages
-	// Type only works is hard coded as Integer: ANS1BER = 2 for now
-	SnmpSetType  int    `json:"setType"`
-	SnmpSetValue uint16 `json:"setValue"`
-
-	//The SNMP operation to invoke.
-	//One of get, getnext, getbulk, set, walk, walkall, bulkwalk, bulkwalkall
-	SnmpOperation string `json:"snmpOperation"`
-
-	snmpConnectionSettings
+type snmpAdapterRequestType struct {
+	SnmpAgent     string            `json:"snmpAgent"`
+	SnmpOIDs      []snmpJsonPDUType `json:"snmpOIDs"`
+	SnmpOperation string            `json:"snmpOperation"` //The SNMP operation to invoke. One of get, getnext, getbulk, set, walk, walkall, bulkwalk, bulkwalkall
 }
 
-type cbPlatformBroker struct {
-	name         string
-	clientID     string
-	client       *cb.DeviceClient
-	platformURL  *string
-	messagingURL *string
-	systemKey    *string
-	systemSecret *string
-	deviceName   *string
-	password     *string
-	topic        string
-	qos          int
+type snmpAdapterResponseType struct {
+	Request  snmpAdapterRequestType `json:"request"`
+	Success  bool                   `json:"success"`
+	Error    string                 `json:"error"`
+	SnmpOIDs []snmpJsonPDUType      `json:"snmpOIDs"`
 }
 
-func init() {
-	flag.StringVar(&sysKey, "systemKey", "", "system key (required)")
-	flag.StringVar(&sysSec, "systemSecret", "", "system secret (required)")
-	flag.StringVar(&deviceName, "deviceName", "snmpAdapter", "name of device (optional)")
-	flag.StringVar(&activeKey, "password", "", "password (or active key) for device authentication (required)")
-	flag.StringVar(&platformURL, "platformURL", platURL, "platform url (optional)")
-	flag.StringVar(&messagingURL, "messagingURL", messURL, "messaging URL (optional)")
-	flag.StringVar(&logLevel, "logLevel", "info", "The level of logging to use. Available levels are 'debug, 'info', 'warn', 'error', 'fatal' (optional)")
-	flag.StringVar(&adapterConfigCollection, "adapterConfigCollection", adapterConfigCollectionDefault, "The name of the data collection used to house adapter configuration (optional)")
+type snmpTrapType struct {
+	SnmpAgent string            `json:"snmpAgent"`
+	Target    string            `json:"sourceIP"`
+	SnmpOIDs  []snmpJsonPDUType `json:"snmpOIDs"`
 }
 
-func usage() {
-	log.Printf("Usage: snmpAdapter [options]\n\n")
-	flag.PrintDefaults()
+type snmpJsonPDUType struct {
+	// The value to be set by the SNMP set, or the value when
+	// sending a trap
+	Value interface{} `json:"value"`
+
+	// Name is an oid in string format eg ".1.3.6.1.4.9.27"
+	Name string `json:"name"`
+
+	// The type of the value eg Integer
+	Type int `json:"type"`
 }
 
-func validateFlags() {
-	flag.Parse()
+const (
+	defaultTopicRoot          = "snmp"
+	snmpGetOperation          = "get"
+	snmpGetNextOperation      = "getnext"
+	snmpGetBulk               = "getbulk"
+	snmpSetOperation          = "set"
+	snmpGetResponseOperation  = "getresponse"  //TODO:Not implemented, sent by SNMP agents
+	snmpTrapOperation         = "trap"         //TODO:Not implemented, sent by SNMP agents
+	snmpNotificationOperation = "notification" //TODO:Not implemented, sent by SNMP agents
+	snmpInformOperation       = "inform"       //TODO:Not implemented, sent by SNMP agents
+	snmpReportOperation       = "report"       //TODO:Not implemented, SNMP v3 only
+	snmpWalkOperation         = "walk"         //TODO:
+	snmpWalkAllOperation      = "walkall"      //TODO:
+	snmpBulkWalkOperation     = "bulkwalk"     //TODO:
+	snmpBulkWalkAllOperation  = "bulkwalkall"  //TODO:
+)
 
-	if sysKey == "" || sysSec == "" || activeKey == "" {
+var (
+	//Adapter command line arguments
+	adapterName     = "snmp-adapter"
+	logLevel        string //Defaults to info
+	adapterConfig   *adapter_library.AdapterConfig
+	adapterSettings snmpAgentMapType
+	tickerLength    = time.Second * 60 * 15 //15 minute timer to refresh adapter settings
 
-		log.Printf("ERROR - Missing required flags\n\n")
-		flag.Usage()
-		os.Exit(1)
-	}
-}
+	//gosnmp specific variables
+	snmpAgents  = map[string]interface{}{}
+	trapServers = map[string]interface{}{}
+)
 
 func main() {
 	fmt.Println("Starting snmpAdapter...")
+	var err error
 
-	//Validate the command line flags
-	flag.Usage = usage
-	validateFlags()
-
-	rand.Seed(time.Now().UnixNano())
-
-	//Initialize the logging mechanism
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-
-	filter := &logutils.LevelFilter{
-		Levels:   []logutils.LogLevel{"DEBUG", "INFO", "WARN", "ERROR", "FATAL"},
-		MinLevel: logutils.LogLevel(strings.ToUpper(logLevel)),
-		Writer:   os.Stdout,
+	err = adapter_library.ParseArguments(adapterName)
+	if err != nil {
+		log.Fatalf("[FATAL] Failed to parse arguments: %s\n", err.Error())
 	}
 
-	log.SetOutput(filter)
-
-	//Add mqtt logging
-	// logger := log.New(os.Stdout, "", log.LstdFlags|log.Lshortfile)
-	// mqtt.ERROR = logger
-	// mqtt.CRITICAL = logger
-	// mqtt.WARN = logger
-	// mqtt.DEBUG = logger
-
-	cbBroker = cbPlatformBroker{
-		name:         "ClearBlade",
-		clientID:     deviceName + "_client",
-		client:       nil,
-		platformURL:  &platformURL,
-		messagingURL: &messagingURL,
-		systemKey:    &sysKey,
-		systemSecret: &sysSec,
-		deviceName:   &deviceName,
-		password:     &activeKey,
-		topic:        "",
-		qos:          msgSubscribeQos,
+	adapterConfig, err = adapter_library.Initialize()
+	if err != nil {
+		log.Fatalf("[FATAL] Failed to initialize: %s\n", err.Error())
 	}
 
-	// Initialize ClearBlade Client
-	if err := initCbClient(cbBroker); err != nil {
-		log.Println(err.Error())
-		log.Println("Unable to initialize CB broker client. Exiting.")
-		return
+	processAdapterSettings()
+
+	//Start a timer to periodically re-initialize the adapter_library to re-retrieve the adapter settings
+	log.Printf("[INFO] Creating ticker of %d seconds to refresh the adapter settings", tickerLength)
+	initTicker := time.NewTicker(tickerLength)
+	quit := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-initTicker.C:
+				adapter_library.FetchAdapterConfig()
+				processAdapterSettings()
+			case <-quit:
+				initTicker.Stop()
+				return
+			}
+		}
+	}()
+
+	//Connect to the MQTT broker and subscribe to the request topic
+	err = adapter_library.ConnectMQTT(adapterConfig.TopicRoot+"/+/request", cbMessageHandler)
+	if err != nil {
+		log.Fatalf("[FATAL] Failed to connect MQTT: %s\n", err.Error())
 	}
 
-	defer close(endWorkersChannel)
-	endWorkersChannel = make(chan string)
+	// wait for signal to stop/kill process to allow for graceful shutdown
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-c
 
-	//Handle OS interrupts to shut down gracefully
-	interruptChannel := make(chan os.Signal, 1)
-	signal.Notify(interruptChannel, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-interruptChannel
+	log.Printf("[INFO] OS signal %s received, gracefully shutting down adapter.\n", sig)
+	//Stop the timer
+	log.Println("[DEBUG] Stopping the initTicker")
+	close(quit)
 
-	log.Printf("[INFO] OS signal %s received, ending go routines.", sig)
-
-	//End the existing goRoutines
-	endWorkersChannel <- "Stop Channel"
-
-	//Close
-	if trapServer != nil {
-		trapServer.Close()
+	//Close all trap servers
+	log.Println("[DEBUG] Closing all trap servers")
+	if len(trapServers) > 0 {
+		for _, trapServer := range trapServers {
+			trapServer.(*snmp.TrapListener).Close()
+		}
 	}
+
 	os.Exit(0)
 }
 
-// ClearBlade Client init helper
-func initCbClient(platformBroker cbPlatformBroker) error {
-	log.Println("[INFO] initCbClient - Initializing the ClearBlade client")
-
-	log.Printf("[DEBUG] initCbClient - Platform URL: %s\n", *(platformBroker.platformURL))
-	log.Printf("[DEBUG] initCbClient - Platform Messaging URL: %s\n", *(platformBroker.messagingURL))
-	log.Printf("[DEBUG] initCbClient - System Key: %s\n", *(platformBroker.systemKey))
-	log.Printf("[DEBUG] initCbClient - System Secret: %s\n", *(platformBroker.systemSecret))
-	log.Printf("[DEBUG] initCbClient - Device Name: %s\n", *(platformBroker.deviceName))
-	log.Printf("[DEBUG] initCbClient - Password: %s\n", *(platformBroker.password))
-
-	cbBroker.client = cb.NewDeviceClientWithAddrs(*(platformBroker.platformURL), *(platformBroker.messagingURL), *(platformBroker.systemKey), *(platformBroker.systemSecret), *(platformBroker.deviceName), *(platformBroker.password))
-
-	for err := cbBroker.client.Authenticate(); err != nil; {
-		log.Printf("[ERROR] initCbClient - Error authenticating %s: %s\n", platformBroker.name, err.Error())
-		log.Println("[ERROR] initCbClient - Will retry in 1 minute...")
-
-		// sleep 1 minute
-		time.Sleep(time.Duration(time.Minute * 1))
-		err = cbBroker.client.Authenticate()
+func processAdapterSettings() {
+	newSettings := snmpAgentMapType{}
+	err := json.Unmarshal([]byte(adapterConfig.AdapterSettings), &newSettings)
+	if err != nil {
+		log.Fatalf("[FATAL] Failed to parse Adapter Settings: %s\n", err.Error())
 	}
 
-	//Retrieve adapter configuration data
-	log.Println("[INFO] initCbClient - Retrieving adapter configuration...")
-	getAdapterConfig()
+	//Remove agents and trap servers that are no longer needed
+	cleanUpAgentsAndTrapServers(newSettings)
 
-	log.Println("[INFO] initCbClient - Initializing MQTT")
-	callbacks := cb.Callbacks{OnConnectionLostCallback: onConnectLost, OnConnectCallback: onConnect}
-	if err := cbBroker.client.InitializeMQTTWithCallback(platformBroker.clientID+"-"+strconv.Itoa(rand.Intn(10000)), "", 30, nil, nil, &callbacks); err != nil {
-		log.Fatalf("[FATAL] initCbClient - Unable to initialize MQTT connection with %s: %s", platformBroker.name, err.Error())
-		return err
-	}
+	//Create agents and trap servers based on the new settings
+	for key, agentSettings := range newSettings {
+		//First validate the settings
+		if ok, error := agentSettingsAreValid(agentSettings); ok {
+			//Recreate all agents and trap servers if settings change
+			if agentExists := agentExists(key); !agentExists || agentSettingsHaveChanged(key, adapterSettings[key], agentSettings) {
+				//Stop and delete the existing trap server
+				if trapServerExists(key) {
+					log.Printf("[DEBUG] Deleting trap server for agent %s\n", key)
+					trapServers[key].(*snmp.TrapListener).Close()
+					delete(trapServers, key)
+				}
 
-	return nil
-}
+				if agentExists {
+					log.Printf("[DEBUG] Deleting snmp agent for agent %s\n", key)
+					delete(snmpAgents, key)
+				}
+				log.Printf("[INFO] Creating snmp agent for agent %s\n", key)
+				createAgent(key, agentSettings)
 
-// If the connection to the broker is lost, we need to reconnect and
-// re-establish all of the subscriptions
-func onConnectLost(client mqtt.Client, connerr error) {
-	log.Printf("[INFO] OnConnectLost - Connection to broker was lost: %s\n", connerr.Error())
-
-	//End the existing goRoutines
-	endWorkersChannel <- "Stop Channel"
-
-	if trapServer != nil {
-		trapServer.Close()
-	}
-
-	//We don't need to worry about manally re-initializing the mqtt client. The auto reconnect logic will
-	//automatically try and reconnect. The reconnect interval could be as much as 20 minutes.
-
-	//Auto reconnect does not appear to be working in all cases. Let's just end and let the OS restart the adapter
-	// log.Printf("[INFO] OnConnectLost - Sending SIGINT: \n")
-	// interruptChannel <- syscall.SIGINT
-}
-
-// When the connection to the broker is complete, set up any subscriptions
-// and authenticate the google pubsub client
-func onConnect(client mqtt.Client) {
-	log.Println("[INFO] OnConnect - Connected to ClearBlade Platform MQTT broker")
-
-	//CleanSession, by default, is set to true. This results in non-durable subscriptions.
-	//We therefore need to re-subscribe
-	log.Println("[INFO] OnConnect - Begin configuring platform subscription")
-
-	var err error
-	for cbSubscribeChannel, err = cbSubscribe(config.TopicRoot + "/request"); err != nil; {
-		//Wait 30 seconds and retry
-		log.Printf("[ERROR] OnConnect - Error subscribing to MQTT: %s\n", err.Error())
-		log.Println("[ERROR] OnConnect - Will retry in 30 seconds...")
-		time.Sleep(time.Duration(30 * time.Second))
-		cbSubscribeChannel, err = cbSubscribe(config.TopicRoot + "/request")
-	}
-
-	//Start subscribe worker
-	go cbSubscribeWorker()
-}
-
-func cbSubscribeWorker() {
-	log.Println("[INFO] subscribeWorker - Starting MQTT subscribeWorker")
-
-	//Wait for subscriptions to be received
-	for {
-		select {
-		case message, ok := <-cbSubscribeChannel:
-			if ok {
-				jsonPayload := adapterRequest{}
-				if err := json.Unmarshal(message.Payload, &jsonPayload); err != nil {
-					log.Printf("[ERROR] cbSubscribeWorker - Error encountered unmarshalling json: %s\n", err.Error())
-					sendErrorResponse(message.Payload, err.Error())
-				} else {
-					log.Printf("[DEBUG] cbSubscribeWorker - Json payload received: %#v\n", jsonPayload)
-					if connection, err := getConnection(jsonPayload); err != nil {
-						sendErrorResponse(message.Payload, "Error creating SNMP Connection: "+err.Error())
-					} else {
-						if err := executeSnmpOperation(connection, jsonPayload); err != nil {
-							sendErrorResponse(message.Payload, err.Error())
-						}
-					}
+				if agentSettings.ShouldHandleTraps {
+					log.Printf("[INFO] Starting trap server on port %d for agent %s\n", agentSettings.TrapServerPort, key)
+					go createTrapServer(key, agentSettings)
 				}
 			}
-		case _ = <-endWorkersChannel:
-			//End the current go routine when the stop signal is received
-			log.Println("[INFO] subscribeWorker - Stopping subscribeWorker")
-			return
+		} else {
+			log.Printf("[Error] Invalid settings for agent: %s\n", error.Error())
 		}
 	}
+
+	adapterSettings = newSettings
 }
 
-// Subscribes to a topic
-func cbSubscribe(topic string) (<-chan *mqttTypes.Publish, error) {
-	log.Printf("[INFO] subscribe - Subscribing to MQTT topic %s\n", topic)
-	subscription, error := cbBroker.client.Subscribe(topic, cbBroker.qos)
-	if error != nil {
-		log.Printf("[ERROR] subscribe - Unable to subscribe to MQTT topic: %s due to error: %s\n", topic, error.Error())
-		return nil, error
+// This function is invoked whenever a message is received on the {adapterConfig.TopicRoot}/request topic
+func cbMessageHandler(message *mqttTypes.Publish) {
+	log.Println("[INFO] cbMessageHandler - request received")
+	log.Printf("[DEBUG] handleRequest - Json payload received: %s\n", string(message.Payload))
+
+	var jsonPayload snmpAdapterRequestType
+	if err := json.Unmarshal(message.Payload, &jsonPayload); err != nil {
+		log.Printf("[ERROR] handleRequest - Error encountered unmarshalling json: %s\n", err.Error())
+		sendErrorResponse(jsonPayload, err.Error())
+	} else {
+		handleRequest(message.Topic, jsonPayload)
 	}
-
-	log.Printf("[DEBUG] subscribe - Successfully subscribed to MQTT topic %s\n", topic)
-	return subscription, nil
 }
 
-// Publishes data to a topic
+// This function is responsible for processing requests sent to the adapter
+func handleRequest(topic mqtt_parsing.TopicPath, payload snmpAdapterRequestType) {
+	if payload.SnmpAgent != "" {
+		if agentExists(payload.SnmpAgent) {
+			if connection, err := getSnmpConnection(payload.SnmpAgent); err != nil {
+				sendErrorResponse(payload, "Error creating SNMP Connection: "+err.Error())
+			} else {
+				if err := executeSnmpOperation(connection, payload); err != nil {
+					sendErrorResponse(payload, err.Error())
+				}
+			}
+		} else {
+			log.Printf("[ERROR] agent with name %s does not exist. Cannot connect to agent", payload.SnmpAgent)
+		}
+	} else {
+		log.Println("[ERROR] snmpAgent not specified in request. Cannot execute SNMP operation")
+	}
+}
+
+// This function is responsible for publishing data to the specified topic
 func cbPublish(topic string, data string) error {
 	log.Printf("[INFO] cbPublish - Publishing to topic %s\n", topic)
-	error := cbBroker.client.Publish(topic, []byte(data), cbBroker.qos)
+	error := adapter_library.Publish(topic, []byte(data))
 	if error != nil {
 		log.Printf("[ERROR] cbPublish - Unable to publish to topic: %s due to error: %s\n", topic, error.Error())
 		return error
@@ -407,194 +288,160 @@ func cbPublish(topic string, data string) error {
 	return nil
 }
 
-func getAdapterConfig() {
-	log.Println("[INFO] getAdapterConfig - Retrieving adapter config")
-	config = adapterConfig{
-		TopicRoot: defaultTopicRoot,
+// This function is responsible for creating a connection to the SNMP server
+func createAgent(agentName string, settings snmpAgentSettingsType) {
+	//We need to dereference the pointer so that we do a deep copy, otherwise we
+	//end up modifying the reference and changing the values of other agents
+	params := *snmp.Default
+
+	params.Target = settings.Target
+
+	if settings.ConnectionPort > 0 {
+		params.Port = settings.ConnectionPort
 	}
 
-	//Retrieve the adapter configuration row
-	query := cb.NewQuery()
-	query.EqualTo("adapter_name", deviceName)
+	if settings.Transport != "" {
+		params.Transport = settings.Transport
+	}
 
-	//A nil query results in all rows being returned
-	log.Println("[DEBUG] getAdapterConfig - Executing query against table " + adapterConfigCollection)
-	results, err := cbBroker.client.GetDataByName(adapterConfigCollection, query)
-	if err != nil {
-		log.Println("[DEBUG] getAdapterConfig - Adapter configuration could not be retrieved. Using defaults")
-		log.Printf("[ERROR] getAdapterConfig - Error retrieving adapter configuration: %s\n", err.Error())
-	} else {
-		data := results["DATA"].([]interface{})
-		if len(data) > 0 {
-			log.Println("[INFO] getAdapterConfig - Adapter config retrieved")
-			configData := data[0].(map[string]interface{})
+	if settings.SnmpCommunity != "" {
+		params.Community = settings.SnmpCommunity
+	}
 
-			//MQTT topic root
-			if configData["topic_root"] != nil {
-				config.TopicRoot = configData["topic_root"].(string)
-			}
-			log.Printf("[DEBUG] getAdapterConfig - TopicRoot set to %s\n", config.TopicRoot)
+	if settings.SnmpTimeout > 0 {
+		params.Timeout = time.Duration(settings.SnmpTimeout) * time.Second
+	}
 
-			//adapter_settings
-			if configData["adapter_settings"] != nil {
-				if err := json.Unmarshal([]byte(configData["adapter_settings"].(string)), &config); err != nil {
-					log.Printf("[ERROR] getAdapterConfig - Error while unmarshalling adapter settings: %s. Defaulting all adapter settings.\n", err.Error())
-					config.Port = 162
-				}
-			} else {
-				log.Println("[INFO] applyAdapterConfig - Settings are nil. Defaulting all adapter settings.")
-			}
-		} else {
-			log.Println("[INFO] getAdapterConfig - No rows returned. Using defaults")
+	params.Version = convertSnmpVersion(settings.SnmpVersion)
+	params.ExponentialTimeout = settings.SnmpExponentialTimeout
+
+	if settings.SnmpRetries > 0 {
+		params.Retries = settings.SnmpRetries
+	}
+
+	if settings.SnmpMaxOids > 0 {
+		params.MaxOids = settings.SnmpMaxOids
+	}
+
+	if settings.SnmpMaxRepetitions > 0 {
+		params.MaxRepetitions = settings.SnmpMaxRepetitions
+	}
+
+	if settings.SnmpNonRepeaters > 0 {
+		params.NonRepeaters = settings.SnmpNonRepeaters
+	}
+
+	if settings.SnmpAppOpts != nil {
+		params.AppOpts = settings.SnmpAppOpts
+	}
+
+	if params.Version == snmp.Version3 {
+		// 	MsgFlags SnmpV3MsgFlags
+		if settings.SnmpMsgFlags > 0 {
+			params.MsgFlags = snmp.SnmpV3MsgFlags(settings.SnmpMsgFlags)
 		}
+
+		if settings.SnmpSecurityModel > 0 {
+			params.SecurityModel = snmp.SnmpV3SecurityModel(settings.SnmpSecurityModel)
+		}
+		//TODO: Implement these as needed
+		// 	SecurityParameters SnmpV3SecurityParameters
+		// 	ContextEngineID string
+		// 	ContextName string
+
 	}
-
-	applyAdapterSettings(&config)
-}
-
-func applyAdapterSettings(config *adapterConfig) {
-	if config.ShouldHandleTraps == true {
-		log.Printf("[INFO] applyAdapterConfig - Starting trap server on port %d\n", config.Port)
-		go createTrapServer(config)
-	}
-}
-
-func getConnection(payload adapterRequest) (*snmp.GoSNMP, error) {
-	log.Println("[DEBUG] getConnection - Verifying connection parameters")
-
-	if payload.Target == "" {
-		log.Printf("[ERROR] getConnection - snmpAddress not specified in incoming payload: %+v\n", payload)
-		return nil, errors.New("snmpAddress not specified in incoming payload")
-	}
-
-	//TODO - May need to make this required for only SNMP V1
-	if payload.SnmpCommunity == "" {
-		log.Printf("[ERROR] getConnection - snmpCommunity not specified in incoming payload: %+v\n", payload)
-		return nil, errors.New("snmpCommunity not specified in incoming payload")
-	}
-
-	if payload.SnmpVersion == 0 {
-		log.Printf("[ERROR] getConnection - snmpVersion not specified in incoming payload: %+v\n", payload)
-		return nil, errors.New("snmpVersion not specified in incoming payload")
-	}
-
-	params := &snmp.GoSNMP{
-		Target:             payload.Target,
-		Port:               payload.Port,
-		Community:          payload.SnmpCommunity,
-		Timeout:            time.Duration(payload.SnmpTimeout) * time.Second,
-		Version:            convertSnmpVersion(payload.SnmpVersion),
-		Retries:            payload.snmpConnectionSettings.SnmpRetries,
-		ExponentialTimeout: payload.snmpConnectionSettings.SnmpExponentialTimeout,
-		MaxOids:            payload.snmpConnectionSettings.SnmpMaxOids,
-		MaxRepetitions:     payload.snmpConnectionSettings.SnmpMaxRepetitions,
-		NonRepeaters:       payload.snmpConnectionSettings.SnmpNonRepeaters,
-		AppOpts:            payload.snmpConnectionSettings.SnmpAppOpts,
-		ContextEngineID:    payload.snmpConnectionSettings.SnmpContextEngineID,
-		ContextName:        payload.snmpConnectionSettings.SnmpContextName,
-	}
-
-	log.Printf("[DEBUG] getConnection - SNMP version set to %+v\n", params.Version)
-
-	if payload.Port == 0 {
-		params.Port = defaultSnmpTargetPort
-	}
-
-	if payload.snmpConnectionSettings.SnmpTransport != "" && (payload.snmpConnectionSettings.SnmpTransport == "tcp" ||
-		payload.snmpConnectionSettings.SnmpTransport == "udp") {
-		params.Transport = payload.snmpConnectionSettings.SnmpTransport
-	} else {
-		//Defaulting occurs in validateParameters method of GoSNMP
-		log.Println("[DEBUG] getConnection - Transport defaulted to udp")
-	}
-
-	if payload.snmpConnectionSettings.SnmpTimeout == 0 {
-		params.Timeout = defaultSnmpTimeout
-	}
-
-	// MsgFlags:           payload.snmpConnectionSettings.SnmpMsgFlags,
-	// SecurityModel:      payload.snmpConnectionSettings.SnmpSecurityModel,
-	// SecurityParameters: payload.snmpConnectionSettings.SnmpSecurityParameters,
 
 	if logLevel == "debug" {
-		gosnmp.Default.Logger = gosnmp.NewLogger(log.New(os.Stdout, "", 0))
-		// DWB changed to NewLogger as per SNMP library update
+		params.Logger = snmp.NewLogger(log.New(os.Stdout, "", 0))
 	}
+	snmpAgents[agentName] = &params
 
-	return params, params.Connect()
+	log.Printf("[DEBUG] createAgent - Agent created %+v\n", params)
+	log.Printf("[DEBUG] createAgent - SNMP version set to %+v\n", params.Version)
 }
 
-func sendResponse(returnData map[string]interface{}) {
+func getSnmpConnection(agentName string) (*snmp.GoSNMP, error) {
+	return snmpAgents[agentName].(*snmp.GoSNMP), snmpAgents[agentName].(*gosnmp.GoSNMP).Connect()
+}
+
+// This function is responsible for returning a successful SNMP response to the invoking client
+func sendResponse(returnData snmpAdapterResponseType) {
 	response, err := json.Marshal(returnData)
 
 	if err == nil {
-		cbPublish(config.TopicRoot+"/response", string(response))
+		if returnData.Request.SnmpAgent != "" {
+			cbPublish(adapterConfig.TopicRoot+"/"+returnData.Request.SnmpAgent+"/response", string(response))
+		} else {
+			cbPublish(adapterConfig.TopicRoot+"/unknownAgent/response", string(response))
+		}
 	} else {
 		log.Printf("[ERROR] sendResponse - Error marshalling JSON: %s\n", err.Error())
 	}
 }
 
-func sendErrorResponse(request []byte, error string) {
-	response, err := json.Marshal(map[string]interface{}{
-		"request": request,
-		"error":   error,
+// This function is responsible for returning an unsuccessful SNMP response to the invoking client
+func sendErrorResponse(request snmpAdapterRequestType, error string) {
+	response, err := json.Marshal(snmpAdapterResponseType{
+		Request:  request,
+		Success:  false,
+		Error:    error,
+		SnmpOIDs: make([]snmpJsonPDUType, 0),
 	})
 
 	if err == nil {
-		cbPublish(config.TopicRoot+"/error", string(response))
+		if request.SnmpAgent != "" {
+			cbPublish(adapterConfig.TopicRoot+"/"+request.SnmpAgent+"/error", string(response))
+		} else {
+			cbPublish(adapterConfig.TopicRoot+"/unknownAgent/error", string(response))
+		}
 	} else {
 		log.Printf("[ERROR] sendErrorResponse - Error marshalling JSON: %s\n", err.Error())
 	}
 }
 
-func createTrapServer(config *adapterConfig) {
-	trapServer = snmp.NewTrapListener()
-	trapServer.OnNewTrap = snmpTrapHandler
+// This function is responsible for creating a SNMP trap server
+func createTrapServer(agentName string, settings snmpAgentSettingsType) {
+	var trapServer = snmp.NewTrapListener()
+	trapServer.OnNewTrap = SnmpTrapHandler
+	trapServer.Params = snmpAgents[agentName].(*snmp.GoSNMP)
 
-	//TODO - Determine which of these we can get rid of
-	trapServer.Params = &snmp.GoSNMP{
-		Port:               config.Port,
-		Community:          config.SnmpCommunity,
-		Timeout:            time.Duration(config.SnmpTimeout) * time.Second,
-		Version:            convertSnmpVersion(config.SnmpVersion),
-		Retries:            config.SnmpRetries,
-		ExponentialTimeout: config.SnmpExponentialTimeout,
-		MaxOids:            config.SnmpMaxOids,
-		MaxRepetitions:     config.SnmpMaxRepetitions,
-		NonRepeaters:       config.SnmpNonRepeaters,
-		AppOpts:            config.SnmpAppOpts,
-		ContextEngineID:    config.SnmpContextEngineID,
-		ContextName:        config.SnmpContextName,
-	}
+	trapServers[agentName] = trapServer
 
-	if logLevel == "debug" {
-		// trapServer.Params.Logger = log.New(os.Stdout, "", 0)
-		// DWB changed to use New Logger as per SNMP library update
-		trapServer.Params.Logger = gosnmp.NewLogger(log.New(os.Stdout, "", 0))
-	}
-
-	err := trapServer.Listen("0.0.0.0:" + strconv.Itoa(int(config.Port)))
+	err := trapServer.Listen("0.0.0.0:" + strconv.Itoa(int(settings.TrapServerPort)))
 	if err != nil {
 		log.Printf("[ERROR] createTrapServer - Error encountered invoking trapServer.listen: %s\n", err)
-		log.Panicf("Error encountered invoking trapServer.listen: %s\n", err)
 	}
 }
 
-func snmpTrapHandler(packet *snmp.SnmpPacket, addr *net.UDPAddr) {
+// This function is responsible for handling any received SNMP traps
+func SnmpTrapHandler(packet *snmp.SnmpPacket, addr *net.UDPAddr) {
 	log.Printf("[DEBUG] snmpTrapHandler - Received SNMP trap from %s\n", addr.IP)
-	log.Printf("[DEBUG] snmpTrapHandler - Trap data received: %+v\n", packet.Variables)
+	log.Printf("[DEBUG] snmpTrapHandler - Trap data received: %+v\n", packet)
+	log.Printf("[DEBUG] snmpTrapHandler - addr data received: %+v\n", addr)
+
+	agent := getAgentForTrap(addr.IP.String())
 
 	//Publish trap data
-	trapData := createJSONFromPDUs(packet.Variables)
-	fmt.Printf("[DEBUG] formatTrap - Publishing trap data: %+v\n", trapData)
+	trapData := snmpTrapType{
+		SnmpAgent: agent,
+		Target:    addr.IP.String(),
+		SnmpOIDs:  createJSONFromPDUs(packet.Variables),
+	}
+
+	fmt.Printf("[DEBUG] SnmpTrapHandler - Publishing trap data: %+v\n", trapData)
 	if trapJSON, err := json.Marshal(trapData); err != nil {
-		log.Printf("[ERROR] formatTrap - Error marshalling JSON trap data: %s\n", err.Error())
+		log.Printf("[ERROR] SnmpTrapHandler - Error marshalling JSON trap data: %s\n", err.Error())
 	} else {
-		cbPublish(config.TopicRoot+"/trap", string(trapJSON))
+		if agent != "" {
+			cbPublish(adapterConfig.TopicRoot+"/"+agent+"/trap", string(trapJSON))
+		} else {
+			log.Printf("[ERROR] SnmpTrapHandler - Agent with IP address %s does not exist. Publishing with agent = unknown_agent", addr.IP.String())
+			cbPublish(adapterConfig.TopicRoot+"/unknown_agent/trap", string(trapJSON))
+		}
 	}
 }
 
-func executeSnmpOperation(connection *snmp.GoSNMP, payload adapterRequest) error {
+func executeSnmpOperation(connection *snmp.GoSNMP, payload snmpAdapterRequestType) error {
 	//Typically, SNMP uses UDP as its transport protocol.
 	//The well known UDP ports for SNMP traffic are 161 (SNMP) and 162 (SNMPTRAP)
 	// var Default = &GoSNMP{
@@ -609,6 +456,10 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload adapterRequest) error
 	// }
 	log.Println("[DEBUG] executeSnmpOperation - Executing snmp operation")
 
+	response := snmpAdapterResponseType{
+		Request: payload,
+		Success: true,
+	}
 	var result interface{}
 	var err error
 
@@ -616,53 +467,41 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload adapterRequest) error
 
 	// Asn1BER's - http://www.ietf.org/rfc/rfc1442.txt
 	//	const (
-	//		EndOfContents Asn1BER = 0x00
-	//		UnknownType   Asn1BER = 0x00
-	//		Boolean       Asn1BER = 0x01
-	//		Integer       Asn1BER = 0x02
-	//		BitString     Asn1BER = 0x03
-	//		OctetString   Asn1BER = 0x04
+	// EndOfContents     Asn1BER = 0x00
+	// UnknownType       Asn1BER = 0x00
+	// Boolean           Asn1BER = 0x01
+	// Integer           Asn1BER = 0x02
+	// BitString         Asn1BER = 0x03
+	// OctetString       Asn1BER = 0x04
+	// Null              Asn1BER = 0x05
+	// ObjectIdentifier  Asn1BER = 0x06
+	// ObjectDescription Asn1BER = 0x07
+	// IPAddress         Asn1BER = 0x40
+	// Counter32         Asn1BER = 0x41
+	// Gauge32           Asn1BER = 0x42
+	// TimeTicks         Asn1BER = 0x43
+	// Opaque            Asn1BER = 0x44
+	// NsapAddress       Asn1BER = 0x45
+	// Counter64         Asn1BER = 0x46
+	// Uinteger32        Asn1BER = 0x47
+	// OpaqueFloat       Asn1BER = 0x78
+	// OpaqueDouble      Asn1BER = 0x79
+	// NoSuchObject      Asn1BER = 0x80
+	// NoSuchInstance    Asn1BER = 0x81
+	// EndOfMibView      Asn1BER = 0x82
 	//	)
 
 	operation := payload.SnmpOperation
 
 	switch operation {
 	case snmpGetOperation:
-		result, err = connection.Get(payload.SnmpOIDs) //returns (result *SnmpPacket, err error)
+		result, err = connection.Get(getOidArrayFromJSON(payload.SnmpOIDs)) //returns (result *SnmpPacket, err error)
 	case snmpGetNextOperation:
-		result, err = connection.GetNext(payload.SnmpOIDs) // returns (result *SnmpPacket, err error)
+		result, err = connection.GetNext(getOidArrayFromJSON(payload.SnmpOIDs)) // returns (result *SnmpPacket, err error)
 	case snmpGetBulk:
-		result, err = connection.GetBulk(payload.SnmpOIDs, uint8(connection.NonRepeaters), connection.MaxRepetitions) // returns (result *SnmpPacket, err error)
+		result, err = connection.GetBulk(getOidArrayFromJSON(payload.SnmpOIDs), uint8(connection.NonRepeaters), connection.MaxRepetitions) // returns (result *SnmpPacket, err error)
 	case snmpSetOperation:
-		// create a pdu structure to be passed to the Set command
-		val := int(payload.SnmpSetValue)
-		name := payload.SnmpOIDs[0]
-		setType := payload.SnmpSetType
-		var a_type gosnmp.Asn1BER = 0
-		switch setType {
-		case 2:
-			a_type = gosnmp.Integer
-		default:
-			log.Println("[DEBUG] Asn1BER type provided is NOT SUPPORTED1")
-		}
-		// Will need to account for diverse data types specified in Mib.
-		// Works with Integer type for now
-		// pdu := snmp.SnmpPDU{
-		//	Name:  setOID,
-		//	Type:  2,     0x02 is AnsBer type integer, OctetString is 0x04,
-		//	Value: payload.SnmpSetValue,
-		// }
-
-		pdu := snmp.SnmpPDU{
-			Value: val, //payload.SnmpSetValue,
-			Name:  name,
-			Type:  a_type, // payload.SnmpSetType e.g. 0x02 is AnsBer type integer, OctetString is 0x04,
-		}
-		var setPdu []snmp.SnmpPDU
-		setPdu = append(setPdu, pdu)
-		// func (x *GoSNMP) Set(pdus []SnmpPDU) (result *SnmpPacket, err error)
-		result, err = connection.Set(setPdu) // returns (result *SnmpPacket, err error)
-
+		result, err = connection.Set(createPDUsFromJSON(payload.SnmpOIDs)) // returns (result *SnmpPacket, err error)
 	case snmpWalkOperation:
 		err = errors.New("SNMP walk currently not supported") // returns error
 	case snmpWalkAllOperation:
@@ -680,51 +519,128 @@ func executeSnmpOperation(connection *snmp.GoSNMP, payload adapterRequest) error
 		return err
 	}
 
-	//Create JSON response
-	//Need to see if the results interface is []SnmpPDU or *SnmpPacket.
-	//If *SnmpPacket, get Variables value from *SnmpPacket. Variables value is []SnmpPDU
-	var pdus []snmp.SnmpPDU
+	log.Printf("[DEBUG] executeSnmpOperation - SNMP result: %+v\n", result)
+	//Create JSON response - Need to see if the results interface is []SnmpPDU or *SnmpPacket.
 	switch v := result.(type) {
 	case *snmp.SnmpPacket:
 		//get, getnext, getbulk, set
-		pdus = (result.(*snmp.SnmpPacket)).Variables
+		response.SnmpOIDs = createJSONFromPDUs(result.(*snmp.SnmpPacket).Variables)
 	case []snmp.SnmpPDU:
 		//walkall, bulkwalkall
-		pdus = result.([]snmp.SnmpPDU)
+		response.SnmpOIDs = createJSONFromPDUs(result.([]snmp.SnmpPDU))
 	default:
-		// And here I'm feeling dumb. ;)
 		fmt.Printf("Unsupported type: %v", v)
+		return fmt.Errorf("unsupported type: %v", v)
 	}
 
-	response := createJSONFromPDUs(pdus)
-	response["request"] = payload
-
 	log.Printf("[DEBUG] executeSnmpOperation - response: %+v\n", response)
-
 	sendResponse(response)
 	return nil
 }
 
-func createJSONFromPDUs(variables []snmp.SnmpPDU) map[string]interface{} {
-	pduJSON := make(map[string]interface{})
+func createJSONFromPDUs(pdus []snmp.SnmpPDU) []snmpJsonPDUType {
+	pduJSON := make([]snmpJsonPDUType, len(pdus))
 
-	for _, variable := range variables {
-		pduJSON[variable.Name] = map[string]interface{}{
-			"asn1berType": variable.Type,
+	for ndx, pdu := range pdus {
+		pduJSON[ndx] = snmpJsonPDUType{
+			Name: pdu.Name,
+			Type: int(pdu.Type),
 		}
-		switch variable.Type {
-		case snmp.OctetString:
-			//TODO - Need to figure out how to transform to string
-			// OID: .1.3.6.1.6.3.10.2.1.1.0
-			// decodeValue: type is OctetString
-			// decodeValue: value is []byte{0x80, 0x0, 0x1f, 0x88, 0x80, 0x38, 0xf7, 0xc1, 0x4b, 0x33, 0x7b, 0xcc, 0x5d, 0x0, 0x0, 0x0, 0x0}
-			pduJSON[variable.Name].(map[string]interface{})["value"] = variable.Value.([]byte)
+
+		// snmp.EndOfContents: // or snmp.UnknownType Asn1BER = 0x00, returned as nil by snmp library
+		// snmp.Boolean: //Asn1BER = 0x01,
+		// snmp.Integer: //Asn1BER = 0x02, Returned as int by snmp library
+		// snmp.BitString: //Asn1BER = 0x03, Returned as int by snmp library
+		// snmp.Null: //Asn1BER = 0x05, returned as nil by snmp library
+		// snmp.ObjectIdentifier: //Asn1BER = 0x06, Returned as string by snmp library
+		// snmp.ObjectDescription: //Asn1BER = 0x07,
+		// snmp.IPAddress: //Asn1BER = 0x40, Returned as string by snmp library
+		// snmp.Counter32: //Asn1BER = 0x41, Returned as Uint by snmp library
+		// snmp.Gauge32: //Asn1BER = 0x42, Returned as Uint by snmp library
+		// snmp.TimeTicks: //Asn1BER = 0x43, Returned as Uint32 by snmp library
+		// snmp.Opaque: //Asn1BER = 0x44, Returned as byte[] by snmp library
+		// snmp.NsapAddress: //Asn1BER = 0x45
+		// snmp.Counter64: //Asn1BER = 0x46, Returned as Uint64 by snmp library
+		// snmp.Uinteger32: //Asn1BER = 0x47, Returned as Uint32 by snmp library
+		// snmp.OpaqueFloat: //Asn1BER = 0x78, Returned as float32 by snmp library
+		// snmp.OpaqueDouble: //Asn1BER = 0x79, Returned as float64 by snmp library
+		// snmp.NoSuchObject: //Asn1BER = 0x80, returned as nil by snmp library
+		// snmp.NoSuchInstance: //Asn1BER = 0x81, returned as nil by snmp library
+		// snmp.EndOfMibView: //Asn1BER = 0x82, returned as nil by snmp library
+		// snmp.OctetString: //Asn1BER = 0x04, Returned as byte[] by snmp library
+		switch pdu.Type {
+		case snmp.OctetString, snmp.Opaque: //Asn1BER = 0x04, Returned as byte[] by snmp library
+			pduJSON[ndx].Value = string(pdu.Value.([]byte))
 		default:
-			pduJSON[variable.Name].(map[string]interface{})["value"] = variable.Value
+			pduJSON[ndx].Value = pdu.Value
 		}
 	}
 
 	return pduJSON
+}
+
+func createPDUsFromJSON(jsonPdus []snmpJsonPDUType) []snmp.SnmpPDU {
+	pdus := make([]snmp.SnmpPDU, len(jsonPdus))
+
+	for ndx, pdu := range jsonPdus {
+		pdus[ndx] = snmp.SnmpPDU{
+			Name: pdu.Name,
+			Type: snmp.Asn1BER(pdu.Type),
+		}
+
+		// snmp.EndOfContents: // or snmp.UnknownType Asn1BER = 0x00
+		// snmp.Boolean: //Asn1BER = 0x01,
+		// snmp.Integer: //Asn1BER = 0x02, Passed as int type
+		// snmp.BitString: //Asn1BER = 0x03, Passed as byte[]
+		// snmp.Null: //Asn1BER = 0x05
+		// snmp.ObjectIdentifier: //Asn1BER = 0x06, Passed as string
+		// snmp.ObjectDescription: //Asn1BER = 0x07, Passed as string
+		// snmp.IPAddress: //Asn1BER = 0x40, Passed as string
+		// snmp.Counter32: //Asn1BER = 0x41, Passed as Uint32
+		// snmp.Gauge32: //Asn1BER = 0x42, Passed as Uint32
+		// snmp.TimeTicks: //Asn1BER = 0x43, Passed as Uint32
+		// snmp.Opaque: //Asn1BER = 0x44, Passed as byte[]
+		// snmp.NsapAddress: //Asn1BER = 0x45
+		// snmp.Counter64: //Asn1BER = 0x46, Passed as Uint64??
+		// snmp.Uinteger32: //Asn1BER = 0x47, Passed as Uint32
+		// snmp.OpaqueFloat: //Asn1BER = 0x78, Returned as float32 by snmp library
+		// snmp.OpaqueDouble: //Asn1BER = 0x79, Returned as float64 by snmp library
+		// snmp.NoSuchObject: //Asn1BER = 0x80, returned as nil by snmp library
+		// snmp.NoSuchInstance: //Asn1BER = 0x81, returned as nil by snmp library
+		// snmp.EndOfMibView: //Asn1BER = 0x82, returned as nil by snmp library
+		// snmp.OctetString: //Asn1BER = 0x04, Passed as byte[]
+		switch snmp.Asn1BER(pdu.Type) {
+		//TODO: Determine if it's even possible to send these values to a SNMP server
+		// case snmp.EndOfContents, snmp.Null, snmp.NoSuchObject, snmp.NoSuchInstance, snmp.EndOfMibView:
+		// 	pdus[ndx].Value = pdu.Value.(int)
+		case snmp.Integer:
+			pdus[ndx].Value = pdu.Value.(int)
+		case snmp.Counter32, snmp.Gauge32, snmp.TimeTicks, snmp.Uinteger32:
+			pdus[ndx].Value = pdu.Value.(uint32)
+		case snmp.Counter64:
+			pdus[ndx].Value = pdu.Value.(uint64)
+		case snmp.OpaqueFloat:
+			pdus[ndx].Value = pdu.Value.(float32)
+		case snmp.OpaqueDouble:
+			pdus[ndx].Value = pdu.Value.(float64)
+		case snmp.OctetString, snmp.BitString, snmp.Opaque:
+			pdus[ndx].Value = pdu.Value.([]byte)
+		default:
+			pdus[ndx].Value = pdu.Value
+		}
+	}
+
+	return pdus
+}
+
+func getOidArrayFromJSON(jsonPdus []snmpJsonPDUType) []string {
+	oids := make([]string, len(jsonPdus))
+
+	for ndx, jsonPdu := range jsonPdus {
+		oids[ndx] = jsonPdu.Name
+	}
+
+	return oids
 }
 
 func convertSnmpVersion(versionNum uint8) snmp.SnmpVersion {
@@ -736,6 +652,93 @@ func convertSnmpVersion(versionNum uint8) snmp.SnmpVersion {
 	case 3:
 		return snmp.Version3
 	default:
-		return snmp.Version3
+		return snmp.Version2c
 	}
+}
+
+func cleanUpAgentsAndTrapServers(newSettings snmpAgentMapType) {
+	for key := range adapterSettings {
+		//See if an agent that existed in the previous adapter settings has been removed
+		//from the new settings
+		if _, ok := newSettings[key]; !ok {
+			//If a trap server exists for the old agent, close it and remove it
+			if trapServerExists(key) {
+				log.Printf("[DEBUG] Deleting trap server for agent %s\n", key)
+				trapServers[key].(*snmp.TrapListener).Close()
+				delete(trapServers, key)
+			}
+			//Remove the agent
+			delete(snmpAgents, key)
+		}
+	}
+}
+
+// Validates the agent settings in the adapter config collection
+func agentSettingsAreValid(settings snmpAgentSettingsType) (bool, error) {
+	//Target is required
+	if settings.Target == "" {
+		return false, fmt.Errorf("target is empty")
+	}
+
+	if settings.ShouldHandleTraps && settings.TrapServerPort == 0 {
+		log.Println("[DEBUG] NonRepeaters has changed, returning true")
+		return false, fmt.Errorf("trap server port not provided")
+	}
+
+	//Port - not required, will default to 161 in snmp.Default
+	//Transport - not required, will default to "udp" in snmp.Default
+	//Community - not required, will default to "public" in snmp.Default
+	//Version - not required, will default to Version2c in snmp.Default
+	//Timeout - not required, will default to 2 seconds in snmp.Default
+	//Retries - not required, will default to 3 in snmp.Default
+	//ExponentialTimeout - not required, will default to true in snmp.Default
+	//MaxOids - not required, will default to MaxOids in snmp.Default
+	//MaxRepetitions - not required, will default to defaultMaxRepetitions in snmp.Default
+	//NonRepeaters - not required, will default to 0 in snmp.Default
+	//UseUnconnectedUDPSocket - not required, will default to false in snmp.Default
+	//AppOpts map[string]interface{} - option "c" is the only option currently supported by gosnmp
+	if settings.SnmpAppOpts != nil && settings.SnmpAppOpts["c"] != nil && reflect.TypeOf(settings.SnmpAppOpts["c"]).Kind() != reflect.Bool {
+		return false, fmt.Errorf("boolean value not passec for SnmpAppOpts option c")
+	}
+
+	//TODO: Add validations for the SNMP V3 fields. Not sure which of these can be passed in or which ones
+	// are generated automatically
+	//
+	//if settings.SnmpVersion == uint8(snmp.Version3) {
+	//MsgFlags SnmpV3MsgFlags
+	//SecurityModel SnmpV3SecurityModel
+	//SecurityParameters SnmpV3SecurityParameters
+	//ContextEngineID - not required, will default
+	//ContextName string
+	//}
+	return true, nil
+}
+
+func agentSettingsHaveChanged(agentName string, oldSettings snmpAgentSettingsType, newSettings snmpAgentSettingsType) bool {
+	return !reflect.DeepEqual(oldSettings, newSettings)
+}
+
+func agentExists(agentName string) bool {
+	return attributeExistsInMap(agentName, snmpAgents)
+}
+
+func trapServerExists(agentName string) bool {
+	return attributeExistsInMap(agentName, trapServers)
+}
+
+func attributeExistsInMap(attrName string, theMap map[string]interface{}) bool {
+	if _, ok := theMap[attrName]; ok {
+		return true
+	}
+	return false
+}
+
+func getAgentForTrap(trapIp string) string {
+	log.Printf("[DEBUG] Finding agent name for IP %s", trapIp)
+	for agentName, agent := range snmpAgents {
+		if agent.(*gosnmp.GoSNMP).Target == trapIp {
+			return agentName
+		}
+	}
+	return ""
 }
