@@ -348,11 +348,13 @@ SNMP Trap data sent from the adapter will have the following format.
   "snmpOIDs": [
     {
       "name": ".1.3.6.1.4.1.9999.1.1.1",
-      "type": 2
+      "type": 2,
+      "value": 8
     }, 
     {
       "name": ".1.3.6.1.4.1.9999.1.1.2",
-      "type": 2
+      "type": 2,
+      "value": 15
     }
   ],
 }
