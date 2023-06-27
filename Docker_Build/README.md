@@ -1,12 +1,12 @@
-# Docker Image Creation
+# Docker image creation
 
 ## Prerequisites
 
-- Building the image requires internet access
+- Building the image requires internet access.
 
-### Creating the Docker image for the SNMP Adapter
+### Creating the Docker image for the SNMP adapter
 
-Clone this repository and execute the following commands to create a docker image for the snmpAdapter adapter:  
+Clone this repository and execute the following commands to create a docker image for the SNMP adapter:  
 
 - ```docker build --no-cache -f Docker_Build/Dockerfile -t clearblade/snmp-adapter:{version} -t clearblade/snmp-adapter:latest .``` 
 
@@ -14,7 +14,7 @@ Clone this repository and execute the following commands to create a docker imag
 
 ## Deploying the adapter image
 
-When the docker image has been created, it will need to be saved and imported into the runtime environment. Execute the following steps to save and deploy the adapter image
+When the docker image has been created, it must be saved and imported into the runtime environment. Execute the following steps to save and deploy the adapter image.
 
 - On the machine where the ```docker build``` command was executed, execute ```docker save clearblade/snmp-adapter:latest > snmp-adapter.tar``` 
 
@@ -30,11 +30,11 @@ Once you create the docker image, start the SNMP adapter using the following com
 
    __systemKey__
   * REQUIRED
-  * The system key of the ClearBLade Platform __System__ the adapter will connect to
+  * The system key of the ClearBlade Platform __System__ the adapter will connect to
 
    __systemSecret__
   * REQUIRED
-  * The system secret of the ClearBLade Platform __System__ the adapter will connect to
+  * The system secret of the ClearBlade Platform __System__ the adapter will connect to
    
    __deviceName__
   * The device name the adapter will use to authenticate to the ClearBlade Platform
@@ -44,26 +44,26 @@ Once you create the docker image, start the SNMP adapter using the following com
    
    __password__
   * REQUIRED
-  * The active key the adapter will use to authenticate to the platform
+  * The active key the adapter will use to authenticate to the Platform
   * Requires the device to have been defined in the _Auth - Devices_ collection within the ClearBlade Platform __System__
    
    __platformUrl__
-  * The url of the ClearBlade Platform instance the adapter will connect to
+  * The ClearBlade Platform instance URL the adapter will connect to
   * OPTIONAL
   * Defaults to __http://localhost:9000__
 
    __messagingUrl__
-  * The MQTT url of the ClearBlade Platform instance the adapter will connect to
+  * The ClearBlade Platform instance MQTT URL the adapter will connect to
   * OPTIONAL
   * Defaults to __localhost:1883__
 
    __adapterConfigCollection__
   * OPTIONAL 
-  * The name of the data collection used to house adapter configuration data
+  * The data collection name used to house the adapter configuration data
   * Defaults to adapter_config
 
    __logLevel__
-  * The level of runtime logging the adapter should provide.
+  * The runtime logging level the adapter should provide
   * Available log levels:
     * fatal
     * error
