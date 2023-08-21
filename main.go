@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+	"flag"
 
 	adapter_library "github.com/clearblade/adapter-go-library"
 	"github.com/clearblade/mqtt_parsing"
@@ -133,6 +134,7 @@ var (
 	adapterConfig   *adapter_library.AdapterConfig
 	adapterSettings snmpAgentMapType
 	tickerLength    = time.Second * 60 * 15 //15 minute timer to refresh adapter settings
+	useMessageRelay bool
 
 	//gosnmp specific variables
 	snmpAgents  = map[string]interface{}{}
@@ -142,6 +144,8 @@ var (
 func main() {
 	fmt.Println("Starting snmpAdapter...")
 	var err error
+
+	flag.BoolVar(&useMessageRelay, "use-message-relay", false, "use message relay for sending/receiving MQTT messages")
 
 	err = adapter_library.ParseArguments(adapterName)
 	if err != nil {
@@ -173,7 +177,11 @@ func main() {
 	}()
 
 	//Connect to the MQTT broker and subscribe to the request topic
-	err = adapter_library.ConnectMQTT(adapterConfig.TopicRoot+"/+/request", cbMessageHandler)
+	topic := adapterConfig.TopicRoot + "/+/request"
+	if useMessageRelay {
+		topic += "/_edge/+"
+	}
+	err = adapter_library.ConnectMQTT(topic, cbMessageHandler)
 	if err != nil {
 		log.Fatalf("[FATAL] Failed to connect MQTT: %s\n", err.Error())
 	}
@@ -277,6 +285,9 @@ func handleRequest(topic mqtt_parsing.TopicPath, payload snmpAdapterRequestType)
 
 // This function is responsible for publishing data to the specified topic
 func cbPublish(topic string, data string) error {
+	if useMessageRelay {
+		topic += "/_platform"
+	}
 	log.Printf("[INFO] cbPublish - Publishing to topic %s\n", topic)
 	error := adapter_library.Publish(topic, []byte(data))
 	if error != nil {
