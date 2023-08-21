@@ -614,17 +614,17 @@ func createPDUsFromJSON(jsonPdus []snmpJsonPDUType) []snmp.SnmpPDU {
 		// case snmp.EndOfContents, snmp.Null, snmp.NoSuchObject, snmp.NoSuchInstance, snmp.EndOfMibView:
 		// 	pdus[ndx].Value = pdu.Value.(int)
 		case snmp.Integer:
-			pdus[ndx].Value = pdu.Value.(int)
+			pdus[ndx].Value = int(pdu.Value.(float64))
 		case snmp.Counter32, snmp.Gauge32, snmp.TimeTicks, snmp.Uinteger32:
-			pdus[ndx].Value = pdu.Value.(uint32)
+			pdus[ndx].Value = uint32(pdu.Value.(float64))
 		case snmp.Counter64:
-			pdus[ndx].Value = pdu.Value.(uint64)
+			pdus[ndx].Value = uint64(pdu.Value.(float64))
 		case snmp.OpaqueFloat:
-			pdus[ndx].Value = pdu.Value.(float32)
+			pdus[ndx].Value = float32(pdu.Value.(float64))
 		case snmp.OpaqueDouble:
 			pdus[ndx].Value = pdu.Value.(float64)
 		case snmp.OctetString, snmp.BitString, snmp.Opaque:
-			pdus[ndx].Value = pdu.Value.([]byte)
+			pdus[ndx].Value = []byte(pdu.Value.(string))
 		default:
 			pdus[ndx].Value = pdu.Value
 		}
